@@ -32,7 +32,7 @@ jobs:
         run: pnpm build
       - name: end-to-end smoke test on the built site (level 0, no network)
         run: |
-          pnpm exec playwright install --with-deps chromium
+          pnpm --filter @desk/web exec playwright install --with-deps chromium
           pnpm --filter @desk/web e2e --project=smoke
       - uses: actions/upload-pages-artifact@v3
         with:
