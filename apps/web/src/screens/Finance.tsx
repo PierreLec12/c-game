@@ -33,7 +33,7 @@ export function Finance() {
       </div>
       <div className="panel">
         <h2>Ledger <span className="muted">(every movement of cash)</span></h2>
-        <div style={{ maxHeight: 480, overflow: "auto" }}>
+        <div style={{ maxHeight: 480, overflow: "auto" }} tabIndex={0} aria-label="ledger rows">
           <table><thead><tr><th>When</th><th>Kind</th><th className="num">Amount</th><th>Note</th></tr></thead>
             <tbody>{[...f.ledger].reverse().slice(0, 300).map((r) => <tr key={r.id}><td className="small">{formatClock(state.startDay, r.tick).slice(4)}</td><td className="small">{r.kind.replace("_", " ")}</td><td className="num"><Fig v={r.amount} fmt="usd" sign what={`${r.kind.replace("_", " ")} (${r.currency})`} why={r.text} at={r.tick} /></td><td className="small muted">{r.text}</td></tr>)}</tbody></table>
         </div>

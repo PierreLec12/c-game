@@ -19,7 +19,7 @@ export function Markets() {
   const months = state.listed[inst];
   const points = months.map((m) => { const q = state.quotes[ckey(inst, m)]; const c = state.contracts[ckey(inst, m)]; return { month: m, mid: q.mid, settle: c.settle ? c.settle.v : null, bid: q.bid, ask: q.ask }; });
   return (
-    <div className="grid cols-2">
+    <div className="grid markets">
       <div className="panel" style={{ gridColumn: "1 / -1" }}>
         <div className="flex">
           {ALL.map((i) => {

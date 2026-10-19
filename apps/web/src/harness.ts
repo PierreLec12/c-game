@@ -18,7 +18,7 @@ export function installHarness(): void {
         if (actions.length) log.push({ tick: s.tick, actions });
         s = tick(s, actions, rng).state;
       }
-      useGame.setState({ state: s, seed, log, speed: 0, pauseReason: "demo", feed: [], cardQueue: [], selected: { inst: spec.instruments[0], month: s.listed[spec.instruments[0]][0] } });
+      useGame.setState({ state: s, seed, log, speed: 0, pauseReason: null, feed: [], cardQueue: [], selected: { inst: spec.instruments[0], month: s.listed[spec.instruments[0]][0] } });
     },
     state: () => useGame.getState().state,
   };

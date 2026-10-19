@@ -74,7 +74,7 @@ export function Academy() {
       <div className="panel">
         <h2>Glossary</h2>
         <input aria-label="search the glossary" placeholder="search" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
-        <div style={{ maxHeight: 360, overflow: "auto" }}>
+        <div style={{ maxHeight: 360, overflow: "auto" }} tabIndex={0} aria-label="glossary entries">
           <table><tbody>{terms.map((t) => <tr key={t.term}><td><strong>{t.term}</strong><span className="badge">L{t.level}</span></td><td className="small">{t.definition} <button className="ghost small" onClick={() => setCardOpen(t.cardId)}>card</button></td></tr>)}</tbody></table>
         </div>
       </div>

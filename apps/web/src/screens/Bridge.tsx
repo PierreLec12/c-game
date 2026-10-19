@@ -47,7 +47,7 @@ export function Bridge() {
       <div className="panel">
         <h2>Objectives</h2>
         <ul className="checklist">
-          {state.level.objectives.map((o) => <li key={o.id}><span className={`dot ${o.status}`} aria-label={o.status} /><span>{o.text}{o.detail && <span className="muted small"> · {o.detail}</span>}</span></li>)}
+          {state.level.objectives.map((o) => <li key={o.id}><span className={`dot ${o.status}`} role="img" aria-label={o.status} /><span>{o.text}{o.detail && <span className="muted small"> · {o.detail}</span>}</span></li>)}
         </ul>
       </div>
       <div className="panel accent-mentor">

@@ -1,5 +1,5 @@
 :root {
-  --navy: #0b1220; --navy-2: #111a2e; --navy-3: #182340; --line: #26324f; --text: #e6edf3; --muted: #9fb0c8; --dim: #6f7f99;
+  --navy: #0b1220; --navy-2: #111a2e; --navy-3: #182340; --line: #26324f; --text: #e6edf3; --muted: #a9b8cf; --dim: #8e9db7;
   --crude: #f2b53f; --products: #ff6ec7; --teal: #3fd3c5; --gas: #5aa9ff; --lng: #6be3ff; --freight: #e0c58b; --cash: #5ad17a; --risk: #ff6b6b; --mentor: #b79cff;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace; --sans: -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
   --radius: 8px;
@@ -39,6 +39,8 @@ main { flex: 1; overflow: auto; padding: 16px; }
 .grid { display: grid; gap: 14px; }
 .grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
 .grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.grid.markets { grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr); }
+@media (max-width: 1000px) { .grid.markets { grid-template-columns: 1fr; } }
 .panel { background: var(--navy-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
 .panel.accent-crude { border-top: 3px solid var(--crude); } .panel.accent-risk { border-top: 3px solid var(--risk); } .panel.accent-mentor { border-top: 3px solid var(--mentor); } .panel.accent-cash { border-top: 3px solid var(--cash); } .panel.accent-gas { border-top: 3px solid var(--gas); }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }

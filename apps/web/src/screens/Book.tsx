@@ -79,7 +79,7 @@ export function Book() {
       </div>
       <div className="panel accent-risk">
         <h2>Risk manager</h2>
-        {state.risk.messages.length === 0 ? <div className="muted">Nothing yet. Keep it that way.</div> : <div className="feed">{[...state.risk.messages].reverse().map((m, i) => <div key={i} className={`row ${m.severity === "info" ? "" : "limit_warning"}`}><span className="t">t{m.tick}</span><span>{m.text}</span></div>)}</div>}
+        {state.risk.messages.length === 0 ? <div className="muted">Nothing yet. Keep it that way.</div> : <div className="feed" tabIndex={0} aria-label="risk manager messages">{[...state.risk.messages].reverse().map((m, i) => <div key={i} className={`row ${m.severity === "info" ? "" : "limit_warning"}`}><span className="t">t{m.tick}</span><span>{m.text}</span></div>)}</div>}
       </div>
     </div>
   );
