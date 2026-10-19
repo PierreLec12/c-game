@@ -42,6 +42,8 @@ export interface LevelSpec {
   unlocks: ActionType[];
   regime: Regime;
   world: WorldInit;
+  /** The world the pre-history ran under (default: the level's world). A level whose world differs starts with the price at the pre-history equilibrium and the new anchor pulling it: designed drift. */
+  prehistoryWorld?: WorldInit;
   factors: FactorInit;
   limits: RiskLimits;
   events: EventSchedule[];
@@ -55,7 +57,10 @@ export interface LevelSpec {
   pass: (state: State) => boolean;
   quiz: (state: State) => QuizQuestion[];
   drills?: (seed: number) => DrillQuestion[];
+  /** The bot's P&L on the default seed (seeds[0]), checked in as a regression test; the live par is computed per seed. */
   par: number;
+  /** true for a level with no P&L target (orientation): the P&L component of the score is a flat 100 */
+  noPar?: boolean;
   solve: (state: State) => Action[];
   seeds: number[];
   /** process checklist weight: objectives counted as done over total */

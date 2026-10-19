@@ -82,7 +82,7 @@ export function validateAction(state: State, spec: LevelSpec, a: Action): string
     case "answer_drill": {
       const d = L.drills.find((x) => x.id === a.drillId);
       if (!d) return `no drill ${a.drillId}`;
-      if (d.given !== undefined) return "that drill is already answered";
+      if (d.given !== undefined && d.correct) return "that drill is already right";
       return Number.isFinite(a.answer) ? null : "type a number";
     }
     case "answer_quiz": {

@@ -5,6 +5,9 @@
 import type { LevelSpec } from "./levels";
 import type { ScoreCard, State } from "./types";
 
+/** Stylised: the smallest par the score divides by, so a lucky $1 par does not make $10 worth 200 points. */
+export const PAR_FLOOR = 10000;
+
 export const RANKS: { name: string; from: number }[] = [
   { name: "Operator", from: 0 }, { name: "Junior Trader", from: 300 }, { name: "Trader", from: 800 },
   { name: "Senior Trader", from: 1500 }, { name: "Book Head", from: 2400 }, { name: "Partner", from: 3200 },
@@ -17,8 +20,11 @@ export function rankFor(cumulativeScore: number): string {
 
 export function computeScore(state: State, spec: LevelSpec): ScoreCard {
   const pnl = state.pnl.total;
-  const par = spec.par;
-  const ratio = par > 0 ? pnl / par : pnl >= 0 ? 1 : -1;
+  const par = state.level.par;
+  // par 0 means the level has no P&L target (orientation): the P&L component is a flat 100.
+  // A par below the floor (the bot barely broke even or lost on this seed) is replaced by the floor so the ratio keeps its meaning.
+  const base = spec.noPar ? 0 : Math.max(par, PAR_FLOOR);
+  const ratio = base > 0 ? pnl / base : 1;
   const pnlComponent = 100 * Math.max(-1, Math.min(2, ratio));
   const objs = state.level.objectives;
   const process = objs.length ? objs.filter((o) => o.status === "done").length / objs.length : 1;
@@ -37,7 +43,7 @@ export function computeScore(state: State, spec: LevelSpec): ScoreCard {
   if (state.risk.closesTotal > 0 && state.risk.closesInsideLimit === state.risk.closesTotal) achievements.push("Inside the limit every close");
   if (state.level.quiz.length > 0 && quiz === 1) achievements.push("Read the debrief right");
   if (state.news.some((n) => n.source === "leak" && n.resolved?.outcome === "false") && state.lots.length === 0) achievements.push("Called the rumour false");
-  const formula = `100 x clamp(${fmt(pnl)} / ${fmt(par)}, -1, 2) = ${pnlComponent.toFixed(0)}; + 50 x ${process.toFixed(2)} process = ${processComponent.toFixed(0)}; - 25 x ${fmt(maxDrawdown)} / ${fmt(state.capital)} drawdown = ${drawdownComponent.toFixed(0)}; + 25 x ${quiz.toFixed(2)} quiz = ${quizComponent.toFixed(0)}`;
+  const formula = `100 x clamp(${fmt(pnl)} / ${fmt(base)}${base !== par ? ` (par ${fmt(par)} floored)` : ""}, -1, 2) = ${pnlComponent.toFixed(0)}; + 50 x ${process.toFixed(2)} process = ${processComponent.toFixed(0)}; - 25 x ${fmt(maxDrawdown)} / ${fmt(state.capital)} drawdown = ${drawdownComponent.toFixed(0)}; + 25 x ${quiz.toFixed(2)} quiz = ${quizComponent.toFixed(0)}`;
   return { pnl, par, pnlComponent, process, processComponent, maxDrawdown, drawdownComponent, quiz, quizComponent, total, passed, formula, achievements };
 }
 

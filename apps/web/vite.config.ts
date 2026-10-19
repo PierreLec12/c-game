@@ -2,6 +2,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+declare const process: { env: Record<string, string | undefined> };
+
 // Served from GitHub Pages under /<repo>/; a hash router keeps every route reachable from the one index.html.
 export default defineConfig({
   plugins: [react()],

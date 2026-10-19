@@ -50,6 +50,12 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
       const delta = decision === "cut" ? -kbd : decision === "hike" ? kbd : 0;
       state.world = applyWorldShock(state.world, { crudeBalance: delta * 0.6, eventIntensity: 0.3, geo: decision === "cut" ? 0.05 : 0 }, { crudeBalance: state.world.targets.crudeBalance + delta });
       jumpBrent(state, decision === "cut" ? 0.02 : decision === "hike" ? -0.02 : 0.0);
+      // the leak's pop unwinds if the leak was wrong
+      const leakEv = state.events.find((e) => e.id === `${ev.id}:leak`);
+      if (leakEv && leakEv.fired) {
+        const claim = str(leakEv.params.claim, "hold");
+        if (claim !== decision) jumpBrent(state, claim === "cut" ? -0.012 : claim === "hike" ? 0.012 : 0);
+      }
       const text = decision === "cut" ? `OPEC+ agrees a ${kbd} kb/d cut` : decision === "hike" ? `OPEC+ raises output by ${kbd} kb/d` : "OPEC+ holds output steady";
       const n = publishNews(state, { source: "wire", headline: text, body: `The meeting ended with a decision to ${decision}. The balance shifts by ${delta} kb/d from next month; the prompt reprices on the headline.`, eventId: ev.id });
       // resolve the leak that preceded this meeting
@@ -75,7 +81,8 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
   positioning_report: {
     kind: "positioning_report", title: "Weekly positioning report", card: "positioning_is_a_crowd",
     fire(state, ev, s) {
-      const net = Math.round(200 + 150 * (state.factors.brentPrompt / 75 - 1) * 10 + s.normal() * 30);
+      const crowded = ev.params.crowded === true;
+      const net = crowded ? Math.round(400 + s.normal() * 20) : Math.round(200 + 150 * (state.factors.brentPrompt / 75 - 1) * 10 + s.normal() * 30);
       const n = publishNews(state, { source: "release", headline: `Managed money net long ${net}k lots of Brent`, body: `The weekly positioning report shows speculators net long ${net}k lots${net > 300 ? ", a crowded long: the exit is narrow if the prompt turns" : net < 120 ? ", a light book: there is room for buyers" : ""}.`, eventId: ev.id });
       state.world = applyWorldShock(state.world, { eventIntensity: 0.05 });
       return [{ kind: "release", tick: state.tick, text: n.headline, pause: false, data: { net } }];
@@ -158,7 +165,7 @@ export function scheduleEvents(entries: { id?: string; kind: string; day: number
     const params: Record<string, number | string | boolean> = { ...(e.params ?? {}) };
     if (e.kind === "opec_meeting") {
       if (params.decision === "random" || params.decision === undefined) params.decision = s.pick(["cut", "hike", "hold"]);
-      const truthful = s.chance(2 / 3);
+      const truthful = typeof params.leakTruthful === "boolean" ? params.leakTruthful : s.chance(2 / 3);
       const others = ["cut", "hike", "hold"].filter((d) => d !== params.decision);
       const claim = truthful ? String(params.decision) : s.pick(others);
       out.push({ id: `${id}:leak`, kind: "opec_leak", tick: tick - 24, fired: false, params: { claim, kbd: params.kbd ?? 500, truthful } });

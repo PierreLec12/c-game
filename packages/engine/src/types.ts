@@ -257,6 +257,7 @@ export interface LevelState {
   drills: DrillQuestion[];
   quiz: QuizQuestion[];
   score: ScoreCard | null;
+  par: number; // the solution bot's P&L on this seed
   unlockedActions: ActionType[];
   instruments: InstrumentId[];
   endedTick: number | null;

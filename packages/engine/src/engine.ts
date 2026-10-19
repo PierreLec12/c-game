@@ -27,7 +27,9 @@ function refsOf(spec: LevelSpec) {
 
 /** Simulated pre-history of the factors so the VaR has closes to work with. Runs the same dynamics at negative ticks. */
 function prehistory(spec: LevelSpec, rng: Rng, startDay: number): { world: WorldState; factors: Factors; history: State["history"] } {
-  const neutral = initWorld({ ...spec.world, crudeBalance: 0, oecdInvGap: 0, usInvGap: 0, targets: { ...(spec.world.targets ?? {}), crudeBalance: 0 } });
+  // the scenario's inventory picture is already in place during the pre-history; only the balance drift starts at day 0
+  const base = spec.prehistoryWorld ?? spec.world;
+  const neutral = initWorld({ ...base, crudeBalance: 0, targets: { ...(base.targets ?? {}), crudeBalance: 0 } });
   let world = neutral;
   let factors = initFactors(world, spec.factors, spec.regime);
   const refs = refsOf(spec);
@@ -49,14 +51,26 @@ function prehistory(spec: LevelSpec, rng: Rng, startDay: number): { world: World
   return { world, factors, history };
 }
 
-export function newGame(spec: LevelSpec, seed: number): State {
+/** The solution bot's P&L on this seed: the par the score divides by. */
+export function parFor(spec: LevelSpec, seed: number): number {
+  if (spec.noPar) return 0;
+  return runPolicy(spec, seed, spec.solve, 100000, { par: 0 }).state.pnl.total;
+}
+
+export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = {}): State {
+  const par = opts.par ?? parFor(spec, seed);
   const rng = makeRng(seed);
   const startDay = parseDate(spec.startDate);
   const pre = prehistory(spec, rng, startDay);
-  // the scenario starts here: the level's latent state replaces the neutral pre-history, and the curve jumps to its anchors
-  const world = initWorld({ ...spec.world, regime: spec.regime });
-  const a = anchors(world, pre.factors, refsOf(spec), startDay);
-  const factors: Factors = { ...pre.factors, bw: a.bw, gasolineCrack: a.gasolineCrack, dieselCrack: a.dieselCrack, fuelOilCrack: a.fuelOilCrack, dubaiEW: a.dubaiEW, spread1: { ...a.spread1, ...(spec.factors.spread1 ?? {}) } };
+  // the scenario starts here: the evolved pre-history world continues, with the level's balance, targets and regime; the curve sits at its anchors
+  const designed = initWorld({ ...spec.world, regime: spec.regime });
+  const carried = spec.prehistoryWorld ? { oecdInvGap: designed.oecdInvGap + (pre.world.oecdInvGap - (spec.prehistoryWorld.oecdInvGap ?? 0)), usInvGap: designed.usInvGap + (pre.world.usInvGap - (spec.prehistoryWorld.usInvGap ?? 0)) } : { oecdInvGap: pre.world.oecdInvGap, usInvGap: pre.world.usInvGap };
+  const world: WorldState = { ...pre.world, ...carried, crudeBalance: designed.crudeBalance, targets: designed.targets, regime: designed.regime, baseRate: designed.baseRate, eventIntensity: 0, refineryRuns: designed.refineryRuns, geo: designed.geo };
+  // the flat prices start at the pre-history equilibrium (its anchors), so a level opens where its own history says it should
+  const preAnchor = anchors(pre.world, pre.factors, refsOf(spec), startDay);
+  const snapped: Factors = { ...pre.factors, brentPrompt: Math.exp(preAnchor.logBrent), hhPrompt: Math.exp(preAnchor.logHh), ttfPrompt: Math.exp(preAnchor.logTtf) };
+  const a = anchors(world, snapped, refsOf(spec), startDay);
+  const factors: Factors = { ...snapped, bw: a.bw, gasolineCrack: a.gasolineCrack, dieselCrack: a.dieselCrack, fuelOilCrack: a.fuelOilCrack, dubaiEW: a.dubaiEW, spread1: { ...a.spread1, ...(spec.factors.spread1 ?? {}) } };
   const state: State = {
     version: 1, seed, tick: 0, startDay, world, factors, contracts: {}, listed: { BRENT: [], WTI: [], RBOB: [], ULSD: [], HH: [], TTF: [] }, quotes: {},
     lots: [], orders: [], fills: [],
@@ -71,7 +85,7 @@ export function newGame(spec: LevelSpec, seed: number): State {
     level: {
       id: spec.id, tier: spec.tier, title: spec.title, startDay, endTick: spec.days * HOURS_PER_DAY, status: "running",
       objectives: spec.objectives.map((o) => ({ id: o.id, text: o.text, status: "pending" })), cardsUnlocked: [], cardsOpened: [],
-      drills: spec.drills ? spec.drills(seed) : [], quiz: [], score: null, unlockedActions: [...spec.unlocks], instruments: [...spec.instruments], endedTick: null, mentorLines: [],
+      drills: spec.drills ? spec.drills(seed) : [], quiz: [], score: null, par, unlockedActions: [...spec.unlocks], instruments: [...spec.instruments], endedTick: null, mentorLines: [],
     },
     history: pre.history,
     counters: { lot: 0, order: 0, fill: 0, ledger: 0, news: 0 },
@@ -452,9 +466,9 @@ export function replay(seed: number, levelId: number, log: LogEntry[], untilTick
 }
 
 /** Run a level with a policy until it ends. Used by the solution-bot tests and the ghost line. */
-export function runPolicy(spec: LevelSpec, seed: number, policy: (state: State) => Action[], maxTicks = 100000): { state: State; log: LogEntry[]; events: EngineEvent[] } {
+export function runPolicy(spec: LevelSpec, seed: number, policy: (state: State) => Action[], maxTicks = 100000, opts: { par?: number } = {}): { state: State; log: LogEntry[]; events: EngineEvent[] } {
   const rng = makeRng(seed);
-  let state = newGame(spec, seed);
+  let state = newGame(spec, seed, opts);
   const log: LogEntry[] = [];
   const allEvents: EngineEvent[] = [];
   let guard = 0;
