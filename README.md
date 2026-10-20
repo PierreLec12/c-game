@@ -7,19 +7,23 @@ wrong.
 **Play it:** https://pierrelec12.github.io/c-game/ (static, offline after load, nothing to install; level 0 takes two
 minutes).
 
-Milestones 1 to 4 ship the paper desk, the physical desk, the money, and the products, gas, options and signals: tiers 0 to 4
-(levels 0 to 17), the engine core with cargoes, pricing windows, ships, routes and chokepoints on a bundled coastline, letters of
-credit, prepayment, a covenant, insurance, counterparties with ratings and memory, tanks and blending, delayed headlines and
-rumours, a refinery with yields and a slate, the LNG chain from Sabine Pass to Gate or Sodegaura with the euro leg, options on the
-book with Greek attribution, signals that arrive before the news, the Bridge, Markets, Desk, Map, Book and risk, Intel, Finance
-and Academy screens, saves, and the debrief with a solution-bot ghost line and what-if replays. The crisis levels, the quarter and
-Partner come in milestone 5.
+All five milestones are built: tiers 0 to 5 (levels 0 to 20), the engine core with cargoes, pricing windows, ships, routes and
+chokepoints on a bundled coastline, letters of credit, prepayment, a covenant, insurance, counterparties with ratings and memory,
+tanks and blending, delayed headlines and rumours, a refinery with yields and a slate, the LNG chain from Sabine Pass to Gate or
+Sodegaura with the euro leg, options on the book with Greek attribution, signals that arrive before the news, four stylised crises
+on an inherited book (a squeeze into expiry below zero among them), a full quarter with a budget, Partner with adversarial
+counterparties and a fresh seed every run, sandbox mode, a leaderboard against your own past runs, the Bridge, Markets, Desk, Map,
+Book and risk, Intel, Finance and Academy screens, saves, and the debrief with a solution-bot ghost line and what-if replays.
 
 ![Markets](docs/screenshots/markets.png)
 
 ![Map](docs/screenshots/map.png)
 
-## What it teaches (tiers 1 to 4)
+![Desk: the refinery](docs/screenshots/desk-refinery.png)
+
+![Markets: the option chain](docs/screenshots/markets-options.png)
+
+## What it teaches (tiers 1 to 5)
 
 Lots, ticks and settles; sizing to a VaR limit before choosing a direction; initial and variation margin and what a
 margin call does; contango, backwardation, full carry and the roll; spreads as packages, Brent-WTI and the 3-2-1 crack;
@@ -31,8 +35,10 @@ of credit, prepayment as a loan, the cheapest name for a reason, concentration, 
 net, reducing before you are told, cash and carry, storage economics, blending to a spec. Then the products, gas, options and
 signals: yields and the slate, the seasonality of cracks, a turnaround as a supply event, MMBtu against MWh against cubic metres,
 the netback, storage as the gas curve, Black-76 in one screen, delta as a hedge ratio that moves, vol as a price, lags, signal
-against noise, what a transit count can and cannot tell you. Every number on screen explains itself on hover. Every reference
-figure is labelled stylised.
+against noise, what a transit count can and cannot tell you. Then mastery: a squeeze into expiry and why a landlocked contract
+can settle below zero, a hedge without a cargo as a position, liquidity as a regime, a quarter judged on the number and on how it
+was made, and a market that knows what you hold. Every number on screen explains itself on hover. Every reference figure is
+labelled stylised.
 
 ## Run it locally
 

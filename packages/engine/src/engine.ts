@@ -100,7 +100,7 @@ export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = 
     news: [], releases: [], events: [],
     cargoes: [], tenders: [], vessels: initFleet(), voyages: [], chokepoints: Object.fromEntries(CHOKEPOINTS.map((c) => [c.id, { id: c.id, status: "open" as const, since: 0, note: "open" }])), portCongestion: {},
     lcs: [], tanks: [], counterparties: initCounterparties(), infoDelayHours: spec.infoDelayHours ?? 0, pendingNewsDelay: 0,
-    refinery: spec.refinery ? initRefinery(spec.refinery) : null, signals: [], feedBought: spec.feedIncluded === true, fx0: factors.eurusd, depthScale: spec.backMonthDepth ?? 1,
+    refinery: spec.refinery ? initRefinery(spec.refinery) : null, signals: [], feedBought: spec.feedIncluded === true, fx0: factors.eurusd, depthScale: spec.backMonthDepth ?? 1, stressDepth: spec.stressDepth ?? 1, adversarial: spec.adversarial === true,
     level: {
       id: spec.id, tier: spec.tier, title: spec.title, startDay, endTick: spec.days * HOURS_PER_DAY, status: "running",
       objectives: spec.objectives.map((o) => ({ id: o.id, text: o.text, status: "pending" })), cardsUnlocked: [], cardsOpened: [],
@@ -122,6 +122,22 @@ export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = 
   state.signals = initSignals(state);
   refreshListings(state);
   rebuildQuotes(state, isTradingTick(startDay, 0));
+  // the book the player inherits: tick-0 events fire (a cargo already on offer), then the opening actions are applied as the desk's
+  if (spec.opening && spec.opening.length) {
+    const fired = fireDue(state, rng.stream("events", 0));
+    void fired;
+    const s0 = rng.stream("actions", 0);
+    for (const a of spec.opening) {
+      const reason = validateAction(state, spec, a);
+      if (reason) throw new Error(`opening action ${a.type} refused: ${reason}`);
+      // an inherited position was not traded today: it enters at the model mid with no spread, slippage or impact
+      const saved = a.type === "order" ? state.quotes[ckey(a.inst, a.month)] : null;
+      if (saved && a.type === "order") state.quotes[ckey(a.inst, a.month)] = { ...saved, bid: saved.mid, ask: saved.mid, depth: 1e9 };
+      applyAction(state, spec, a, s0);
+      if (saved && a.type === "order") { state.quotes[ckey(a.inst, a.month)] = saved; state.contracts[ckey(a.inst, a.month)].impact = 0; }
+    }
+    for (const l of state.lots) if (l.openedTick === 0) l.tag = l.tag === "outright" ? "outright" : l.tag;
+  }
   state.risk.var95 = bookVar(state);
   updateObjectives(state, spec);
   state.pnl.equityCurve.push({ tick: 0, equity: spec.capital, pnl: 0, ...{} });
@@ -156,7 +172,7 @@ function rebuildQuotes(state: State, open: boolean): void {
       const c = state.contracts[key];
       const tau = Math.max(0, (c.expiryTick - state.tick) / HOURS_PER_DAY / 30.4375);
       const mid = priceParts(state.factors, inst, tau).price + c.impact;
-      state.quotes[key] = makeQuote(inst, m, mid, idx, hour, state.world.regime, open, state.tick, c.impact, state.depthScale);
+      state.quotes[key] = makeQuote(inst, m, mid, idx, hour, state.world.regime, open, state.tick, c.impact, state.depthScale, state.stressDepth);
     });
   }
 }
@@ -373,7 +389,9 @@ function settle(state: State, spec: LevelSpec): EngineEvent[] {
       events.push({ kind: "expiry", tick: state.tick, text: `${INSTRUMENTS[c.inst].name} ${monthLabel(c.month)} expired: ${Math.abs(net)} lots cash-settled at ${q.mid.toFixed(INSTRUMENTS[c.inst].decimals)}. A hedge that needed to live longer should have been rolled.`, pause: true, data: { inst: c.inst, month: c.month, net } });
       void fe;
     }
-    publishNews(state, { source: "exchange", headline: `${INSTRUMENTS[c.inst].name} ${monthLabel(c.month)} expired at ${c.settle!.v.toFixed(INSTRUMENTS[c.inst].decimals)}`, body: "Last trading day. The next month is now the front." });
+    publishNews(state, { source: "exchange", headline: `${INSTRUMENTS[c.inst].name} ${monthLabel(c.month)} expired at ${c.settle!.v.toFixed(INSTRUMENTS[c.inst].decimals)}`, body: c.settle!.v < 0 ? "Last trading day, below zero: holders paid to be rid of it. The next month is now the front and prices on the curve again." : "Last trading day. The next month is now the front." });
+    // a squeeze ends with the contract it squeezed
+    if (state.factors.squeeze?.[c.inst]) state.factors = { ...state.factors, squeeze: { ...state.factors.squeeze, [c.inst]: 0 } };
   }
   {
     const ph = settlePhysical(state);
@@ -449,10 +467,11 @@ function riskAtClose(state: State, spec: LevelSpec, physBeforePrints?: number, b
       events.push(...loseLife(state, spec, `${riskManager(spec)}: ${what} for a third close. That is a life.`));
     }
   }
-  for (const b of fatal) {
-    events.push(...loseLife(state, spec, `${riskManager(spec)}: ${b.text}. Book flattened. That is a life.`));
-    if (b.limit === "stop_loss") state.risk.stopLossRef = state.pnl.total;
-    if (b.limit === "drawdown") { state.risk.peakEquity = equity(state, cargoesMarkUsd(state) + tanksMarkUsd(state)); state.risk.maxDrawdown = 0; }
+  if (fatal.length) {
+    // one life per close, however many of the fatal limits broke at once; both references reset
+    events.push(...loseLife(state, spec, `${riskManager(spec)}: ${fatal.map((b) => b.text).join("; ")}. Book flattened. That is a life.`));
+    if (fatal.some((b) => b.limit === "stop_loss")) state.risk.stopLossRef = state.pnl.total;
+    if (fatal.some((b) => b.limit === "drawdown")) { state.risk.peakEquity = equity(state, cargoesMarkUsd(state) + tanksMarkUsd(state)); state.risk.maxDrawdown = 0; }
   }
   return events;
 }

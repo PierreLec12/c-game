@@ -50,6 +50,7 @@ export interface Factors {
   vol: Record<InstrumentId, number>; // annualised implied vol at the front
   gradeDiffs: Record<Grade, number>; // market differential of each grade versus its benchmark, $/bbl
   freightIndex: number; // 1 = base hire; rises with tonne-mile demand and chokepoint shocks
+  squeeze?: Partial<Record<InstrumentId, number>>; // $/unit at expiry on the front month of a landlocked contract with nowhere to deliver (a crisis, stylised)
 }
 
 export interface Contract {
@@ -514,6 +515,8 @@ export interface State {
   feedBought: boolean; // the assessment and signals feed costs money
   fx0: number; // EURUSD at the level start: the base for the FX leg on EUR-priced cargo legs
   depthScale: number; // tier knob: 1 = normal depth; thin back months in tier 4
+  stressDepth: number; // tier knob: depth multiplier in the stressed and crisis regimes (Partner: liquidity halves in stress)
+  adversarial: boolean; // tier knob: counterparties price the player's known positions against them
   history: { factors: Factors; day: number }[]; // daily closes of the factors, oldest first (pre-history then live)
   counters: { lot: number; order: number; fill: number; ledger: number; news: number; cargo: number; tender: number; voyage: number; claim: number; lc: number; tank: number; parcel: number };
   pendingNewsDelay: number; // set while a delayed event fires: its headlines publish this many hours later

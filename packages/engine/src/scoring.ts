@@ -45,6 +45,13 @@ export function computeScore(state: State, spec: LevelSpec): ScoreCard {
   if (state.risk.closesTotal > 0 && state.risk.closesInsideLimit === state.risk.closesTotal) achievements.push("Inside the limit every close");
   if (state.level.quiz.length > 0 && quiz === 1) achievements.push("Read the debrief right");
   if (state.news.some((n) => n.source === "leak" && n.resolved?.outcome === "false") && state.lots.length === 0) achievements.push("Called the rumour false");
+  const delivered = state.cargoes.filter((c) => c.status === "delivered");
+  if (delivered.length >= 1 && delivered.every((c) => c.demurrageUsd === 0)) achievements.push("Zero demurrage");
+  const physClosesHedged = state.risk.closes.filter((c) => Math.abs(c.physBbl) >= 100000);
+  if (physClosesHedged.length >= 5 && physClosesHedged.filter((c) => Math.abs(-(c.net.BRENT + c.net.WTI + c.net.DUBAI) * 1000 / c.physBbl - 1) <= 0.1).length / physClosesHedged.length >= 0.8) achievements.push("Hedge inside the window");
+  if (state.events.some((e) => e.kind === "chokepoint" && e.fired && e.params.status === "closed") && state.risk.livesLost === 0) achievements.push("Rode out a closure under limit");
+  if (state.events.some((e) => e.kind === "expiry_squeeze" && e.fired) && !state.fills.some((f) => f.tag === "expiry" && f.price < 0)) achievements.push("Rolled before the squeeze");
+  if (state.events.filter((e) => e.fired && ["expiry_squeeze", "hurricane", "chokepoint", "gas_shock"].includes(e.kind)).length >= 4 && state.risk.livesLost === 0) achievements.push("Four crises, three lives");
   const formula = `100 x clamp(1 + (${fmt(pnl)} - par ${fmt(par)}) / ${fmt(base)}, -1, 2) = ${pnlComponent.toFixed(0)}; + 50 x ${process.toFixed(2)} process = ${processComponent.toFixed(0)}; - 25 x ${fmt(maxDrawdown)} / ${fmt(state.capital)} drawdown = ${drawdownComponent.toFixed(0)}; + 25 x ${quiz.toFixed(2)} quiz = ${quizComponent.toFixed(0)}`;
   return { pnl, par, pnlComponent, process, processComponent, maxDrawdown, drawdownComponent, quiz, quizComponent, total, passed, formula, achievements };
 }

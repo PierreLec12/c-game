@@ -534,3 +534,101 @@ See `docs/LEVELS.md`. Decisions recorded:
 * The tanker-cluster, transit, hotspot and cold-forecast series are stylised shapes (ramp, hold, fade) around stated baselines,
   not models of shipping or weather.
 * The "refinery" attribution leg is new (the prompt's list has no leg for a plant's realised margin).
+
+# Milestone 5: mastery and polish (as built, 2026-10-20)
+
+Milestone 5 adds tier 5 (crises, the quarter, Partner), sandbox mode, the leaderboard, more achievements, a theme and mobile
+pass, and the remaining docs. The repository went public on 2026-10-20 and the Pages deploy runs again.
+
+## Tier 5 mechanics
+
+* **An inherited book.** A level may declare `opening` actions, applied at tick 0 as the desk's before the player's first tick
+  (after the schedule's tick-0 events have fired, so a cargo can already be on offer and accepted). A refused opening action is a
+  level bug and throws. Level 18 inherits a front-month long, a naked legacy gas hedge, a sold VLCC and an unhedged plant.
+* **A squeeze into expiry.** The `expiry_squeeze` event names the contract and the price its front month settles at (default
+  -30); the gap from where the front trades now becomes a `squeeze` part of that contract's price, ramping in over its last two
+  weeks and cleared at its expiry, so the next month stays on the curve. Prices can be negative: quotes no longer floor at a tick
+  when the mid is below zero, fills and initial margin use the absolute notional, a long is cash-settled at the negative settle,
+  and the historical VaR leaves a contract at or below zero out and says so (a squeezed contract has no log return; the stress
+  table still re-prices it). The squeeze lands in the time-spread leg with its own sentence.
+* **Liquidity dries in stress.** A level's `stressDepth` multiplies depth in the stressed and crisis regimes on top of the regime's
+  own cut (Partner uses 0.5: depth halves again), and the quote's hover says so.
+* **Adversarial counterparties.** With `adversarial` on, a bid for a grade the player holds unsold comes $0.30 cheaper and an
+  offer to a book that is net long the benchmark by more than 50 lots comes $0.20 dearer (stylised); the tender's trap text says
+  the name priced it against you once it closes.
+* **A closed strait with no way round.** A ship that sails into a closed chokepoint after the closure now holds there (hire runs,
+  the window waits with the ship) and sails on when it reopens; a ship that can reroute from where it is does. Before this a ship
+  departing after the closure sailed straight through.
+* **Mentor silent, information degraded.** Tier 5 levels declare `mentorSilent` (no mentor lines; the ask-mentor box still
+  answers) and run the wire 36 to 48 hours behind the world with rumours.
+* **Fresh seed, endless.** Partner declares `freshSeed` (the screen picks a time-derived seed every run; the seed is in the save
+  so a run can be replayed and exported) and `endless` (the level ends when the player ends it; 365 days is the clock's ceiling;
+  the solution bot ends its run on day 90 and its P&L on the player's seed is the par, which is recorded as a known limitation
+  for a player who plays longer).
+* **Sandbox.** `sandboxSpec(baseId, knobs)` in the content package builds and registers a level (id 100 plus the base's) from any
+  level with the knobs changed (days, capital, line, regime, information delay, a limit multiplier, lives, back-month depth,
+  stress depth, adversarial, a quiet market with no events), with no par, no pass rule and no quiz. The save carries the base and
+  knobs so the spec is rebuilt before a resume or a replay.
+* **Achievements** added: Zero demurrage, Hedge inside the window, Rode out a closure under limit, Rolled before the squeeze,
+  Four crises three lives.
+
+## The generic policy
+
+Levels 19 and 20 share one trading policy (`generic.ts`): take offers at least the stated edge under fair that the line can
+carry (at most three cargoes at once) from names that are rated and pay on time; counter a near-fair quote once; decline the rest
+with a reason an hour before they close; sell an unsold cargo into a bid at or above fair from a name that pays, counter a near
+bid once, decline a late payer; open the letter of credit a seller wants; fix the cheapest fitting ship; take the cheaper way past
+a restricted strait; anchor for a berth queue; settle claims; hedge every basis in its own contract inside the net limits, in the
+liquid hours, one chunk a tick. It does not prepay, blend, store, trade options or run a plant: those are the earlier levels'
+lessons and the quarter is about judgement on the flow.
+
+## UI in milestone 5
+
+* **Sandbox** on the Academy: a base level, a seed and the knobs (days, capital, line, regime, information delay, a limit
+  multiplier, lives, back-month depth, stress depth, adversarial, a quiet market); a sandbox run saves and exports with its base
+  and knobs, replays from them, records no progress, no rank and no leaderboard row, and its Debrief shows P&L and drawdown only.
+* **Leaderboard**: one row per finished real level (seed, P&L, score, passed, date) in a new store; the Academy shows the past
+  runs of the selected level (for Partner, "Leaderboard against your own past runs") and the Debrief says where this run ranks.
+  A finished level is recorded once; a click in the Debrief no longer counts another attempt (a latent bug that rotated the seed
+  list).
+* **Fresh seed and endless**: Partner starts on a time-derived seed shown on the Academy and the Debrief; the Bridge carries an
+  "End the level" button and says the level runs until it is ended, with the clock's ceiling as a note. The mentor's silence at
+  this tier is said on the Bridge; the ask box still answers.
+* **Feel**: a lost life shows a red vignette and the risk manager's sentence for five seconds; a passed level shows a burst and a
+  rank card (score, P&L, rank, achievements) once no concept card is queued; a chokepoint that changes status flashes once and
+  keeps its outline; events slide in; space, 1/2/3 and N drive the clock. No sound.
+* **Mobile**: under 600px the grids collapse to one column, the top bar wraps, tables scroll sideways and no text is under 12px;
+  the Bridge, Academy and Debrief were checked at 390 by 844 with axe.
+* **Performance**: a tick in the built app runs in 0.3 to 1.6 ms on tier 4 and Partner states (the budget is 5 ms); the built
+  JavaScript is 976 kB raw and 309 kB gzipped including the 136 kB coastline (the budget is 3 MB without it).
+
+## Levels 18 to 20
+
+See `docs/LEVELS.md`. Decisions recorded:
+
+* Level 18's "survive all four inside limits with drawdown under the tier limit" is read as: the level reaches its end with the
+  four crises fired, no life lost, no forced reduction, drawdown under $15m (30% of capital; the covenant cuts the line at 40%),
+  VaR inside at nine closes in ten (a vol-doubling gas spike can put one close over before the book is cut). The inherited book
+  is the point of the level: the naked legacy hedge and the front-month long are the player's to find on day one.
+* Level 19's budget is $1m on $50m of capital over the quarter, with the fallback to the solution bot's own result on the seed
+  when the bot missed the budget (the market does not offer the budget every quarter; the score was always relative to that par).
+  The raw budget hit rate of the bot is recorded (11 of 20 seeds). The bot does not prepay, store, blend, trade options or take
+  the hidden-spread window: the traps in the flow are declined with a reason.
+* Partner's bot is choosier than the quarter's (an edge of $0.40 and two cargoes at once): with the adversarial twenty cents on
+  every bid and the frictions, a wider book breaks even on average while the narrower one is profitable on ten of twelve seeds.
+  Partner's par is the bot's P&L at its own end on day 90; a player who plays longer is compared to that (recorded as a
+  limitation). A fresh seed every run means the par is computed on the player's seed at start, as everywhere else.
+
+## Deviations recorded in milestone 5
+
+* Partner is endless in the sense the prompt asks (it ends when the player ends it) with a 365-day ceiling on the clock, because
+  the engine's level state needs an end tick; the Bridge says so.
+* The Dubai swap's depth at the touch was raised from 25 to 40 lots: with 25 the bot's hedge of a VLCC paid more in impact than the
+  arb was worth; level 7's par moved with it and was re-recorded (-$897,451 to -$788,074).
+* The adversarial edges are $0.20 on a bid for a grade the player holds unsold and $0.15 on an offer to a book net long the
+  benchmark by over 50 lots (the first draft used $0.30 and $0.20; the quarter could not be profitable against them).
+* A squeeze is a `settleAt` price the front month reaches at expiry (default -30), not a fixed amount: the event's size follows the
+  price at the time it fires.
+* The quarter's pass rule falls back to the bot's own result on the seed (see above); Partner's pass is profit only.
+* Sandbox specs are registered under id 100 plus the base's; a sandbox save carries the base and knobs. The level chips on the
+  Academy still gate real levels in production (pass the previous one first); the sandbox takes any base level.

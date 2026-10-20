@@ -173,6 +173,57 @@ delta and the lots the naked rule needs. Level 17 buys the feed, enters a signal
 consecutive readings are off the baseline (one for the hotspot feed), tags the order "signal", and closes each lot three days
 after the headline.
 
+## Tier 5: mastery (milestone 5)
+
+| Level | Title | Days | Instruments | Pass rule | Cards |
+|---|---|---|---|---|---|
+| 18 | Crises | 75 | WTI, Brent, Dubai, TTF, RBOB, ULSD | four crises survived, no life lost, no forced reduction, drawdown under $15m, VaR inside at 90% of closes | A squeeze into expiry; Liquidity is a regime |
+| 19 | The quarter | 90 | everything | P&L at least $1m (or the solution bot's own result on the seed when the bot fell short), VaR inside at every close, no forced reduction, no margin call, no life lost | none unless asked |
+| 20 | Partner | until ended (365-day ceiling) | everything | profitable when ended, no forced reduction, no life lost | none unless asked |
+
+Tier 5 knobs: the mentor silent (the ask box still answers), the wire 36 to 48 hours behind the world, rumours, back months at
+half depth, three lives. Partner adds depth halved in stress, counterparties that price the player's known positions against
+them, a fresh seed every run and a leaderboard against the player's own past runs. Sandbox mode (any level, any seed, any knob,
+no score) is on the Academy.
+
+### Scenarios and traps
+
+* **Level 18**: an inherited book (300 WTI front-month lots long, 400 TTF lots short with nothing behind them, a VLCC of Arab
+  Light bought FOB Ras Tanura and sold DES Ningbo on Dubai, a 100 kb/d plant with no crack hedge) through a squeeze of the WTI
+  front month into expiry (it settles about -$30), a European gas spike in week three (TTF up by half, then a quarter more, then a
+  third back), Hormuz closed for ten days with the ship inside the Gulf (it holds and sails on at the reopening), and a hurricane
+  that shuts the plant for five days in week eight; two rumours.
+* **Level 19**: twelve offers and bids over ninety days from every name met before: cheap Forties, Bonny and Arab Light with buyers
+  a week or two behind; a Vantage offer with a month-average window a month after loading (a hidden time spread); the refiner that
+  pays late with the best bid on the screen; Vantage again with Urals through the Bosphorus; two cargoes that need a letter of
+  credit; a prepayment discount; an OPEC meeting, a rate move, the Red Sea restricted for twelve days, a quality claim, a berth
+  queue at Rotterdam, three rumours.
+* **Level 20**: the same kind of flow repeating every thirty days with the names rotating, a scare in the Gulf mid-month that fades
+  and a rumour late in it, every bid for a grade the player holds twenty cents cheaper and every offer to a long book fifteen cents
+  dearer.
+
+### Pars and pass rates
+
+| Level | Par on seed 1 | Bot pass rate over random seeds | Checked-in seeds |
+|---|---|---|---|
+| 18 | $18,926,819 (the plant's margin, the cargo's edge, the inherited long rolled out of the squeeze) | 100% (8 of 8) | 1 to 10 |
+| 19 | $2,144,983 | the $1m budget is reached on 11 of 20 random seeds; the bot's own result on the seed passes it on the rest (the pass rule says so) | 1 to 5, 7, 8, 10 to 12 |
+| 20 | $1,505,446 (a choosier policy: edge 0.4 and two cargoes at once) | 83% (10 of 12) | 1, 3, 5 to 12 |
+
+A quarter's P&L has a standard deviation of about $1.5m across seeds from the legs futures cannot hedge (Dated against futures
+and Brent against Dubai during the windows, the curve between a purchase window and a sale window), which is why the quarter's
+pass rule falls back to the solution bot's own result on the player's seed when the bot itself missed the budget; the score was
+always relative to that par. Partner's pass is profit, and its leaderboard is the player's own past runs.
+
+### Solution bots
+
+Level 18 closes the naked gas hedge on day one, rolls the front-month long to the third month before the squeeze, hedges the
+cargo on Dubai in the second month and rolls that hedge when the closure pushes the window past its expiry, and keeps the next
+thirty days of runs sold in 3-2-1 packages, lifting the units the hurricane will not run. Levels 19 and 20 run the generic policy
+described in `docs/DESIGN.md`: take the cheap offers that pay for the carry to their window from names that pay, counter the
+near ones once, decline the traps with a reason, sell into fair bids, fix ships, open letters of credit, settle claims, hedge every
+basis in its own contract in 200-lot chunks and roll hedges before they expire. Partner's bot ends its run on day 90.
+
 ## Not yet
 
-Levels 18 to 20 are planned titles in the Academy and arrive with milestone 5.
+Nothing: all twenty-one levels are built. The milestone 5 ledger of what was left out is in `docs/DESIGN.md`.

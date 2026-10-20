@@ -19,6 +19,7 @@ import type { WindowSpec } from "./types";
 import { listedStrikes, makeOptionOrder } from "./optionbook";
 import { fillOption } from "./actions";
 import { monthLabel } from "./calendar";
+const INSTRUMENTS_NAME: Record<string, string> = { WTI: "WTI", BRENT: "Brent", HH: "Henry Hub" };
 
 export interface EventDef {
   kind: string;
@@ -418,6 +419,19 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
       state.world = applyWorldShock(state.world, {}, { refineryRuns: state.world.targets.refineryRuns + num(ev.params.runs, 0.03) });
       const n = publishNews(state, { source: "wire", headline: "Jamnagar crude unit restarts", body: "Diesel exports resume; the crack premium fades.", eventId: ev.id });
       return [{ kind: "news", tick: state.tick, text: n.headline, pause: false }];
+    },
+  },
+  expiry_squeeze: {
+    kind: "expiry_squeeze", title: "Squeeze into expiry", card: "squeeze_into_expiry",
+    fire(state, ev) {
+      const inst = str(ev.params.inst, "WTI") as "WTI" | "BRENT" | "HH";
+      const front = state.listed[inst][0];
+      // the front settles about `settleAt` (default -30): the squeeze is the gap from where it trades now, ramping in over the last two weeks
+      const amount = num(ev.params.settleAt, -30) - (state.quotes[`${inst}:${front}`]?.mid ?? 0);
+      state.factors = { ...state.factors, squeeze: { ...(state.factors.squeeze ?? {}), [inst]: amount } };
+      state.world = applyWorldShock(state.world, { usInvGap: num(ev.params.usInvGap, 40), eventIntensity: 0.8 });
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `Cushing at tank tops: the ${monthLabel(front)} ${INSTRUMENTS_NAME[inst]} contract has nowhere to deliver`), body: str(ev.params.body, `Storage at the delivery hub is full and the front contract is a promise to take oil nobody can take. It trades away from the curve into expiry and can settle below zero (stylised: a landlocked expiry squeeze). Anyone long must roll or close before the last days; the next month is unaffected.`), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true, data: { inst, amount } }];
     },
   },
   gas_shock: {

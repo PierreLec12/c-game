@@ -74,6 +74,18 @@ export interface LevelSpec {
   feedIncluded?: boolean;
   /** tier knob: depth multiplier for the third listed month and beyond (thin back months in tier 4) */
   backMonthDepth?: number;
+  /** tier knob: depth multiplier in the stressed and crisis regimes on top of the regime's own (Partner: liquidity halves in stress) */
+  stressDepth?: number;
+  /** tier knob: counterparties price the player's known positions against them (Partner) */
+  adversarial?: boolean;
+  /** the book the player inherits: actions applied at tick 0 before the player's first tick (an opening position, a cargo already bought) */
+  opening?: Action[];
+  /** the screen picks a fresh seed every run instead of the level's list (Partner) */
+  freshSeed?: boolean;
+  /** the level ends when the player ends it (Partner); `days` is only the clock's ceiling */
+  endless?: boolean;
+  /** the mentor says nothing but what is asked (tier 5) */
+  mentorSilent?: boolean;
 }
 
 const registry = new Map<number, LevelSpec>();

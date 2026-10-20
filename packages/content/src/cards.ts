@@ -411,6 +411,20 @@ export const CARDS: Card[] = [
     showMe: { screen: "map", target: "map", label: "the Hormuz marker" },
     terms: [{ term: "transit count", definition: "Ships passing a chokepoint in a day." }, { term: "hotspot", definition: "A satellite's thermal detection over a site." }],
   },
+  {
+    id: "squeeze_into_expiry", title: "A squeeze into expiry", level: 18, diagram: "curve_contango",
+    sentences: ["A landlocked contract delivers at one hub; when the tanks there are full, the front month is a promise to take oil nobody can take, and its price falls away from the curve as expiry nears.", "It can settle below zero: the holder pays to be rid of it. The next month is a different promise and stays on the curve.", "Roll or close before the last days; a hedge that is long the front month into a squeeze is not a hedge, it is the squeeze."],
+    worked: (s) => { const f = s.listed.WTI[0], n = s.listed.WTI[1]; const q0 = s.quotes[ckey("WTI", f)], q1 = s.quotes[ckey("WTI", n)]; const sq = s.factors.squeeze?.WTI ?? 0; return q0 && q1 ? `WTI ${monthLabel(f)} ${q0.mid.toFixed(2)} against ${monthLabel(n)} ${q1.mid.toFixed(2)}: the front is ${(q0.mid - q1.mid).toFixed(2)} ${q0.mid < q1.mid ? "under" : "over"} the next month${sq ? `; the squeeze is pulling it towards ${(q1.mid + sq).toFixed(0)} by expiry (stylised)` : ""}. You hold ${netLots(s).WTI} WTI lots.` : "Not yet: WTI is not listed in this level."; },
+    showMe: { screen: "markets", target: "curve", label: "the WTI front spread" },
+    terms: [{ term: "squeeze", definition: "A contract forced away from fair value because holders cannot deliver or take delivery." }, { term: "landlocked", definition: "A delivery point served by pipeline and tank, not by sea: full tanks have no outlet." }],
+  },
+  {
+    id: "liquidity_is_a_regime", title: "Liquidity is a regime", level: 18, diagram: "bidask",
+    sentences: ["Depth at the touch is not a constant: it halves when the regime turns stressed and halves again in a crisis, and the spread widens with it.", "A position sized for a normal book cannot leave a stressed one at the same cost; size for the exit you will get, not the entry you had.", "The regime is on every quote's hover; when it says stressed, the slippage estimate on the ticket is the number that matters."],
+    worked: (s) => { const q = frontQuote(s); return q ? `Brent front: ${q.depth} lots at the touch, ${q.spreadTicks} tick${q.spreadTicks > 1 ? "s" : ""} wide, ${s.world.regime} regime${s.stressDepth < 1 ? ` (this level halves depth again in stress)` : ""}. Event intensity ${s.world.eventIntensity.toFixed(2)}, geo ${s.world.geo.toFixed(2)}.` : "Not yet: no quote."; },
+    showMe: { screen: "markets", target: "ticket-touch", label: "the depth on the ticket" },
+    terms: [{ term: "regime", definition: "The market's state: calm, normal, stressed or crisis, set by event intensity and the geopolitics index." }],
+  },
 ];
 
 export const cardById = (id: string): Card | undefined => CARDS.find((c) => c.id === id);

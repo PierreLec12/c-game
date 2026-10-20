@@ -23,20 +23,22 @@ export interface FillEstimate {
 }
 
 /** What the ticket shows before the click: the touch, the slippage for this size, fees. */
-export function estimateFill(state: State, inst: InstrumentId, month: string, side: "buy" | "sell", qty: number): FillEstimate {
+/** Orders the exchange, the clearer or the risk manager send (an expiry settlement, a liquidation, a forced cut) are not subject to the block rule. */
+export const SYSTEM_PLAYERS = ["exchange", "clearer", "risk"];
+export function estimateFill(state: State, inst: InstrumentId, month: string, side: "buy" | "sell", qty: number, ignoreBlock = false): FillEstimate {
   const spec = INSTRUMENTS[inst];
   const q = quoteOf(state, inst, month);
   if (!q) return { price: 0, slippage: 0, fees: 0, notional: 0, refusal: `${inst} ${month} is not listed`, quote: null };
   if (!Number.isInteger(qty) || qty <= 0) return { price: 0, slippage: 0, fees: 0, notional: 0, refusal: "quantity must be a whole number of lots above zero", quote: q };
   const block = Math.floor(spec.dailyVolumeLots.value * BLOCK_SHARE_OF_VOLUME.value);
-  if (qty > block) return { price: 0, slippage: 0, fees: 0, notional: 0, refusal: `${qty} lots is above ${(BLOCK_SHARE_OF_VOLUME.value * 100).toFixed(0)}% of daily volume (${block} lots): a block that size is refused`, quote: q };
+  if (qty > block && !ignoreBlock) return { price: 0, slippage: 0, fees: 0, notional: 0, refusal: `${qty} lots is above ${(BLOCK_SHARE_OF_VOLUME.value * 100).toFixed(0)}% of daily volume (${block} lots): a block that size is refused`, quote: q };
   const spread = q.ask - q.bid;
   const slip = roundToTick(LIQUIDITY.slippagePerDepth.value * (qty / q.depth) * spread, spec.tick);
   const price = side === "buy" ? q.ask + slip : q.bid - slip;
   const fees = qty * spec.fee.value;
   const notional = price * qty * spec.lot * (spec.currency === "EUR" ? state.factors.eurusd : 1);
   const refusal = q.open ? null : "the market is closed: a market order would wait for the open; use a limit order to rest it";
-  return { price: Math.max(spec.tick, price), slippage: slip, fees, notional, refusal, quote: q };
+  return { price: q.mid <= 0 ? price : Math.max(spec.tick, price), slippage: slip, fees, notional: Math.abs(notional), refusal, quote: q };
 }
 
 export function nextId(state: State, kind: keyof State["counters"], prefix: string): string {
@@ -46,7 +48,7 @@ export function nextId(state: State, kind: keyof State["counters"], prefix: stri
 
 /** Execute a market order at the touch plus slippage. Mutates `state`. Returns the fill or a refusal. */
 export function executeMarket(state: State, order: Order): { fill: Fill | null; refusal: string | null } {
-  const est = estimateFill(state, order.inst, order.month, order.side, order.qty);
+  const est = estimateFill(state, order.inst, order.month, order.side, order.qty, SYSTEM_PLAYERS.includes(order.player));
   if (est.refusal) return { fill: null, refusal: est.refusal };
   const q = est.quote!;
   const spec = INSTRUMENTS[order.inst];

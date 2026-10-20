@@ -82,7 +82,7 @@ Use an EFP to fix a leg when you have paper against it. Pass: cargo sold East wi
   pass: (s) => delivered(s) && soldEast(s) && claimHandled(s),
   passRuleText: "Cargo sold East on Dubai and delivered, the claim handled, the East-West exposure hedged or explained in the debrief.",
   quiz,
-  par: -897451.06, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: -788074.1, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);

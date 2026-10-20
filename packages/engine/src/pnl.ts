@@ -22,7 +22,7 @@ export function partsNow(state: State, inst: InstrumentId, month: string): Recor
   return priceParts(state.factors, inst, tauOf(state, inst, month)).parts;
 }
 
-const LEG_OF: Record<string, AttributionLeg> = { flat: "flat", basis: "basis", crack: "crack", time_spread: "time_spread" };
+const LEG_OF: Record<string, AttributionLeg> = { flat: "flat", basis: "basis", crack: "crack", time_spread: "time_spread", squeeze: "time_spread" };
 
 function fmt(x: number, d = 2): string { return (x >= 0 ? "+" : "") + x.toFixed(d); }
 function usd(x: number): string { return (x < 0 ? "-$" : "$") + Math.abs(Math.round(x)).toLocaleString(); }
@@ -36,6 +36,7 @@ export function attributeLot(state: State, lot: Lot, qty: number, price: number,
   const name = `${spec.name} ${monthLabel(lot.month)}`;
   const side = qty > 0 ? "long" : "short";
   let legsSum = 0;
+  const squeezing = Math.abs((parts.squeeze ?? 0) - (lot.base.squeeze ?? 0)) >= 0.005;
   for (const [k, now] of Object.entries(parts)) {
     const before = lot.base[k] ?? now;
     const d = now - before;
@@ -49,6 +50,7 @@ export function attributeLot(state: State, lot: Lot, qty: number, price: number,
     else if (leg === "basis" && lot.inst === "DUBAI") text = `Brent minus Dubai moved ${fmt(-d, 2)} $/bbl on your ${side} ${Math.abs(qty)} lots of ${name}: the East-West spread.`;
     else if (leg === "basis") text = `Brent minus WTI moved ${fmt(-d * (lot.inst === "WTI" ? 1 : 42), 2)} $/bbl: your ${name} ${side} carries Brent-WTI basis.`;
     else if (leg === "crack") text = `The ${lot.inst === "RBOB" ? "gasoline" : "diesel"} crack moved ${fmt(d * 42, 2)} $/bbl on your ${side} ${Math.abs(qty)} lots of ${name}.`;
+    else if (k === "squeeze" || squeezing) text = `${name} is being squeezed into expiry: the contract fell ${fmt((parts.squeeze ?? 0) - (lot.base.squeeze ?? 0), dd)} ${spec.unit} away from the curve while you were ${side} ${Math.abs(qty)} lots. A landlocked contract with nowhere to deliver has to be rolled or closed before its last days.`;
     else text = `Time structure on ${name} moved ${fmt(d, dd)} ${spec.unit} (front spread and roll-down as the contract neared expiry) while you were ${side} ${Math.abs(qty)} lots.`;
     rows.push({ tick: state.tick, inst: lot.inst, month: lot.month, leg, amount, text, lotId: lot.id, packageId: lot.packageId });
   }

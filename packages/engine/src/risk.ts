@@ -95,12 +95,15 @@ export function bookVar(state: State): Fig | null {
     exposure[k] = (exposure[k] ?? 0) + contractUnits * lotUsd;
     prices[k] = state.quotes[k]?.mid ?? (inst === "BRENT" ? state.factors.brentPrompt : inst === "HH" ? state.factors.hhPrompt : state.factors.ttfPrompt);
   }
+  // a contract trading at or below zero has no log return: it is left out and the risk manager says so
+  const belowZero = Object.keys(exposure).filter((k) => prices[k] <= 0);
+  for (const k of belowZero) delete exposure[k];
   const closes = contractCloses(state, Object.keys(exposure));
   const res = historicalVar(exposure, prices, closes, [VAR.level.value], VAR.window.value);
-  if (res.length === 0) return null;
+  if (res.length === 0) return belowZero.length ? { v: 0, at: state.tick, why: `VaR cannot price ${belowZero.join(", ")} at or below zero: the position is left out. The stress table still re-prices it.` } : null;
   const r = res[0];
   const keys = Object.keys(exposure).map((k) => { const inst = k.split(":")[0] as InstrumentId; return `${k} (${Math.round(exposure[k] / lotValueUsd(state, inst))} lots${Math.abs(phys.bbl) >= 1 && k.startsWith("BRENT") ? `, of which ${Math.round(phys.bbl / 1000)} lots of unpriced physical` : ""})`; }).join(", ");
-  return { v: r.loss, at: state.tick, why: `One-day 95% VaR by historical simulation: the loss not exceeded on 95% of the last ${r.days} simulated sessions, applying each session's return of every contract you hold to today's exposure (${keys}).${optionNote} Worst simulated day: $${Math.round(r.worst).toLocaleString()}.` };
+  return { v: r.loss, at: state.tick, why: `One-day 95% VaR by historical simulation: the loss not exceeded on 95% of the last ${r.days} simulated sessions, applying each session's return of every contract you hold to today's exposure (${keys}).${optionNote} Worst simulated day: $${Math.round(r.worst).toLocaleString()}.${belowZero.length ? ` ${belowZero.join(", ")} is at or below zero and left out: a squeezed contract has no log return.` : ""}${r.leftOut.length ? ` Left out for want of history: ${r.leftOut.join(", ")}.` : ""}` };
 }
 
 /** Full re-pricing of the book under price (and, once options exist, vol) shocks. */

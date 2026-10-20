@@ -37,7 +37,7 @@ export function stepVoyages(state: State): { events: EngineEvent[]; rows: Attrib
         const cp = NODE_BY_ID[leg.path[i]]?.chokepoint;
         if (!cp || !CHOKEPOINT_SPECS[cp] || v.cleared.includes(cp)) continue;
         const st = state.chokepoints[cp];
-        if (st && st.status === "restricted" && leg.kind === "laden") {
+        if (st && (st.status === "restricted" || st.status === "closed") && leg.kind === "laden") {
           // hold at the chokepoint node for an instruction
           let nmToNode = 0;
           for (let j = 0; j < i; j++) { const a = NODE_BY_ID[leg.path[j]], b = NODE_BY_ID[leg.path[j + 1]]; nmToNode += greatCircleNm(a.lon, a.lat, b.lon, b.lat); }
@@ -46,6 +46,13 @@ export function stepVoyages(state: State): { events: EngineEvent[]; rows: Attrib
           vessel.lon = p2.lon; vessel.lat = p2.lat;
           v.status = "waiting_chokepoint";
           v.blockedAt = cp;
+          if (st.status === "closed") {
+            // a closed passage with no way round from here: the ship holds until it reopens (a reroute was offered at the closure if one existed)
+            const alt = repathFromHere(state, v, [leg.path[i]]);
+            if (alt) { v.legs[v.legIndex] = alt.leg; v.nmDone = alt.nmDone; v.status = "laden"; v.blockedAt = null; v.eta = etaTick(state, v); v.detour = `${CHOKEPOINT_SPECS[cp].name} closed: rerouted, +${daysFor(alt.extraNm, speedKn(vessel.cls, true, vessel.speedFactor * v.speedFactor)).toFixed(1)} days`; events.push({ kind: "chokepoint", tick: state.tick, text: `${name}: ${v.detour}. New ETA ${formatClock(state.startDay, v.eta)}.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id } }); return; }
+            events.push({ kind: "chokepoint", tick: state.tick, text: `${name} is holding at ${CHOKEPOINT_SPECS[cp].name}: the passage is closed and there is no way round from here. Hire runs until it reopens; the pricing window waits with the ship.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id, chokepoint: cp } });
+            return;
+          }
           events.push({ kind: "chokepoint", tick: state.tick, text: `${name} is holding at ${CHOKEPOINT_SPECS[cp].name}: the passage is restricted. Pay war risk and transit with a ${CHOKEPOINT_SPECS[cp].restrictedDelayDays.value}-day delay, or reroute.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id, chokepoint: cp } });
           return;
         }
@@ -85,6 +92,10 @@ export function stepVoyages(state: State): { events: EngineEvent[]; rows: Attrib
       }
       case "waiting_chokepoint": {
         if (v.waitUntil !== null && state.tick >= v.waitUntil) { v.status = "laden"; v.waitUntil = null; v.blockedAt = null; v.eta = etaTick(state, v); events.push({ kind: "voyage", tick: state.tick, text: `${name} cleared the passage and is under way again. ETA ${formatClock(state.startDay, v.eta)}.`, data: { voyageId: v.id } }); }
+        // held at a closed passage with no decision to make: it sails on when the passage reopens
+        else if (v.waitUntil === null && v.blockedAt && state.chokepoints[v.blockedAt]?.status === "open") { const cp = v.blockedAt; v.cleared.push(cp); v.status = "laden"; v.blockedAt = null; v.eta = etaTick(state, v); events.push({ kind: "voyage", tick: state.tick, text: `${CHOKEPOINT_SPECS[cp].name} reopened: ${name} is under way again. ETA ${formatClock(state.startDay, v.eta)}.`, pause: true, data: { voyageId: v.id } }); }
+        // held at a passage that went from closed to restricted: a decision is now open
+        else if (v.waitUntil === null && v.blockedAt && state.chokepoints[v.blockedAt]?.status === "restricted" && !(v as Voyage & { askedAt?: number }).askedAt) { (v as Voyage & { askedAt?: number }).askedAt = state.tick; events.push({ kind: "chokepoint", tick: state.tick, text: `${CHOKEPOINT_SPECS[v.blockedAt].name} is restricted rather than closed: ${name} can pay war risk and transit with a delay, or reroute.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id, chokepoint: v.blockedAt } }); }
         break;
       }
       case "anchored": {

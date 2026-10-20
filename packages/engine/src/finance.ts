@@ -61,7 +61,7 @@ export function marginRequired(state: State): MarginBreakdown {
   }
   for (const [inst, row] of Object.entries(by)) {
     const spec = INSTRUMENTS[inst as InstrumentId];
-    const unit = row.price * lotValueUsd(state, inst as InstrumentId);
+    const unit = Math.abs(row.price) * lotValueUsd(state, inst as InstrumentId);
     const netAbs = Math.abs(row.net);
     const spreadLots = row.gross - netAbs; // lots paired across months
     row.im = row.rate * unit * (netAbs + spreadLots * (1 - SPREAD_MARGIN_OFFSET.value));

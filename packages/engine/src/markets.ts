@@ -115,6 +115,7 @@ export function initFactors(world: WorldState, init: FactorInit, regime: Regime)
     vol: { BRENT: 0.3, WTI: 0.3, RBOB: 0.3, ULSD: 0.3, HH: 0.3, TTF: 0.3, DUBAI: 0.3, JKM: 0.3 },
     gradeDiffs: Object.fromEntries(Object.values(GRADES).map((g) => [g.id, g.baseDiff.value])) as Record<Grade, number>,
     freightIndex: 1,
+    squeeze: {},
   };
   const a = anchors(world, base, { brentRef, hhRef, ttfRef }, 0);
   base.brentPrompt = Math.exp(a.logBrent);
@@ -225,6 +226,9 @@ export function priceParts(f: Factors, inst: InstrumentId, tau: number): PricePa
     case "DUBAI": parts = { flat: f.brentPrompt, basis: -f.dubaiEW, time_spread: structure(f.spread1.DUBAI, tau) }; break;
     case "JKM": parts = { flat: ttfUsdMmbtu(f.ttfPrompt, f.eurusd), basis: f.jkmPremium, time_spread: structure(f.spread1.JKM, tau) }; break;
   }
+  // a squeeze into expiry: a landlocked front month with nowhere to deliver falls away from the curve over its last two weeks (stylised)
+  const sq = f.squeeze?.[inst];
+  if (sq) parts.squeeze = sq * Math.max(0, 1 - tau / 0.45);
   const price = Object.values(parts).reduce((a, b) => a + b, 0);
   return { price, parts };
 }
@@ -234,18 +238,21 @@ export function roundToTick(x: number, tick: number): number {
 }
 
 /** The bid, ask and depth of one contract from its mid, the listed-month index, the hour and the regime. */
-export function makeQuote(inst: InstrumentId, month: string, mid: number, monthIdx: number, hour: number, regime: Regime, open: boolean, at: number, impact: number, depthScale = 1): Quote {
+export function makeQuote(inst: InstrumentId, month: string, mid: number, monthIdx: number, hour: number, regime: Regime, open: boolean, at: number, impact: number, depthScale = 1, stressDepth = 1): Quote {
   const spec = INSTRUMENTS[inst];
   const L = LIQUIDITY;
   const hourSpread = L.hourSpread.value[hour];
   const spreadTicks = Math.max(1, Math.round(spec.baseSpreadTicks.value * Math.pow(1 + L.monthSpreadGrowth.value, monthIdx) * hourSpread * L.regimeSpread.value[regime]));
-  const depth = Math.max(1, Math.round((spec.baseDepthLots.value * Math.pow(L.monthDepthDecay.value, monthIdx) * L.regimeDepth.value[regime] * (monthIdx >= 2 ? depthScale : 1)) / hourSpread));
+  const stressed = regime === "stressed" || regime === "crisis";
+  const depth = Math.max(1, Math.round((spec.baseDepthLots.value * Math.pow(L.monthDepthDecay.value, monthIdx) * L.regimeDepth.value[regime] * (monthIdx >= 2 ? depthScale : 1) * (stressed ? stressDepth : 1)) / hourSpread));
   const half = (spreadTicks * spec.tick) / 2;
   const bid = roundToTick(mid - half, spec.tick);
   const ask = roundToTick(mid + half, spec.tick);
+  // prices are positive by construction except in a squeeze into expiry, when a landlocked contract can trade below zero
+  const negative = mid <= 0;
   const impactNote = Math.abs(impact) > spec.tick / 2 ? `; includes ${impact >= 0 ? "+" : ""}${impact.toFixed(spec.decimals)} of your own order impact, decaying` : "";
   const why = open
-    ? `Mid ${mid.toFixed(spec.decimals)} from the factor model${impactNote}. Spread ${spreadTicks} tick${spreadTicks > 1 ? "s" : ""} (month ${monthIdx + 1} of 12, hour ${hour}:00 UTC, ${regime} regime). Depth ${depth} lots each side at the touch${monthIdx >= 2 && depthScale < 1 ? ` (back months thin in this level: depth x${depthScale})` : ""}.`
+    ? `Mid ${mid.toFixed(spec.decimals)} from the factor model${impactNote}. Spread ${spreadTicks} tick${spreadTicks > 1 ? "s" : ""} (month ${monthIdx + 1} of 12, hour ${hour}:00 UTC, ${regime} regime). Depth ${depth} lots each side at the touch${monthIdx >= 2 && depthScale < 1 ? ` (back months thin in this level: depth x${depthScale})` : ""}${stressed && stressDepth < 1 ? ` (liquidity dries in stress: depth x${stressDepth})` : ""}${negative ? ". Below zero: the contract has nowhere to deliver and the holder pays to be rid of it (stylised squeeze)." : "."}`
     : `Market closed (weekend or holiday): last mid ${mid.toFixed(spec.decimals)}; orders rest until the open.`;
-  return { inst, month, mid, bid: Math.max(bid, spec.tick), ask: Math.max(ask, spec.tick * 2), depth, spreadTicks, at, open, why };
+  return { inst, month, mid, bid: negative ? bid : Math.max(bid, spec.tick), ask: negative ? ask : Math.max(ask, spec.tick * 2), depth, spreadTicks, at, open, why };
 }

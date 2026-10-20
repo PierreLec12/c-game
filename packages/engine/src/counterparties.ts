@@ -68,16 +68,30 @@ export function issueTender(state: State, t: TenderTemplate, s: Stream): Tender 
   // an offer above fair is expensive for us; a bid below fair is cheap for us. The counterparty's edge works for them.
   const edgeSign = t.side === "offer" ? 1 : -1;
   const edge = cp.diffEdge + (state.counterparties?.[t.counterparty]?.edgeAdj ?? 0);
-  const diff = Math.round((fair + edgeSign * edge + (t.diffVsFair ?? 0) + s.normal() * 0.05) * 100) / 100;
+  // Partner: a counterparty that knows what you hold prices it against you (a bid for a grade you are long of comes cheaper; an offer to a book that is long the benchmark comes dearer)
+  const against = state.adversarial ? adversarialEdge(state, t.side, t.grade, basis) : 0;
+  const diff = Math.round((fair + edgeSign * edge + (t.diffVsFair ?? 0) + against + s.normal() * 0.05) * 100) / 100;
   const laycanDays = t.laycanDays ?? 2;
   const tender: Tender = {
     id: `T${++state.counters.tender}`, counterparty: t.counterparty, side: t.side, grade: t.grade, bbl: t.bbl ?? grade.cargoKb * 1000, incoterm: t.incoterm, port: t.port, basis, window: t.window, diff,
     laycan: [t.laycanStart, t.laycanStart + laycanDays], openedTick: state.tick, expiresTick: state.tick + (t.openHours ?? 48), status: "open",
     note: (t.note ?? (t.side === "offer" ? `${cp.name} offers ${grade.name}, ${(t.bbl ?? grade.cargoKb * 1000).toLocaleString()} ${unitOfGrade(t.grade)}, ${t.incoterm} ${PORTS[t.port].name}, laycan days ${t.laycanStart}-${t.laycanStart + laycanDays}, ${basis} ${diff >= 0 ? "+" : ""}${diff.toFixed(2)}, ${windowLabel(t.window)}.` : `${cp.name} bids for ${grade.name}, ${(t.bbl ?? grade.cargoKb * 1000).toLocaleString()} ${unitOfGrade(t.grade)}, ${t.incoterm} ${PORTS[t.port].name}, discharge days ${t.laycanStart}-${t.laycanStart + laycanDays}, ${basis} ${diff >= 0 ? "+" : ""}${diff.toFixed(2)}, ${windowLabel(t.window)}.`)) + (t.requiresLc ? " A letter of credit is required before loading." : "") + (t.prepayDiscount ? ` Prepay and the differential drops by ${t.prepayDiscount.toFixed(2)}.` : ""),
-    trap: t.trap ?? null, fairDiff: fair, requiresLc: t.requiresLc ?? false, prepayDiscount: t.prepayDiscount ?? 0, countered: null, declineReason: null,
+    trap: t.trap ?? (against ? `${cp.name} knew what you held and priced it against you: ${against > 0 ? "+" : ""}${against.toFixed(2)} on the differential (Partner).` : null), fairDiff: fair, requiresLc: t.requiresLc ?? false, prepayDiscount: t.prepayDiscount ?? 0, countered: null, declineReason: null,
   };
   state.tenders.push(tender);
   return tender;
+}
+
+/** The edge an adversarial counterparty takes from a known position, $/unit: 0.30 against a cargo you need to sell, 0.20 against paper you are known to hold. */
+export const ADVERSARIAL = { unsoldCargo: 0.2, paperLong: 0.15 };
+export function adversarialEdge(state: State, side: "offer" | "bid", grade: Grade, basis: Basis): number {
+  if (side === "bid") {
+    const unsold = state.cargoes.some((c) => c.grade === grade && !c.sale && c.status !== "cancelled");
+    return unsold ? -ADVERSARIAL.unsoldCargo : 0;
+  }
+  const inst = basis === "WTI" ? "WTI" : basis === "DUBAI" ? "DUBAI" : basis === "HH" ? "HH" : basis === "TTF" ? "TTF" : basis === "JKM" ? "JKM" : "BRENT";
+  const net = state.lots.filter((l) => l.inst === inst && !l.option).reduce((a, l) => a + l.qty, 0);
+  return net > 50 ? ADVERSARIAL.paperLong : 0;
 }
 
 export function windowLabel(w: WindowSpec): string {

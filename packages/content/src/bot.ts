@@ -141,6 +141,31 @@ export const cashNeverNegative = (s: State): "pending" | "done" | "failed" => (s
 export const insideLimitsEveryClose = (s: State): "pending" | "done" | "failed" => (s.risk.closesTotal === 0 ? "pending" : s.risk.varBreachedAtClose || s.risk.forcedReductions > 0 || s.risk.messages.some((m) => m.severity === "warning" || m.severity === "breach") ? "failed" : "done");
 export const cargoFrom = (s: State, cp: string): Cargo | undefined => s.cargoes.find((c) => c.purchase.counterparty === cp);
 
+/** A roll for any held futures month that expires within `daysAhead` days: to the listed month `toIdx` out (a hedge that must outlive its contract). */
+export function rollExpiringHedges(s: State, daysAhead = 5, toIdx = 2): Action | null {
+  const seen = new Set<string>();
+  for (const l of s.lots) {
+    if (l.option) continue;
+    const key = `${l.inst}:${l.month}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const c = s.contracts[key];
+    if (!c || c.expiryTick - s.tick > daysAhead * 24) continue;
+    const months = s.listed[l.inst];
+    const to = months[Math.min(toIdx, months.length - 1)];
+    if (!to || to <= l.month) continue;
+    const n = net(s, l.inst, l.month);
+    if (n === 0) continue;
+    // the whole position in one order when the touch can take it; otherwise a chunk a tick through the spread book
+    const depth = s.quotes[key]?.depth ?? 25;
+    const chunk = Math.max(50, Math.min(Math.abs(n), 8 * depth, 600));
+    if (Math.abs(n) <= chunk) return { type: "roll", player: P, inst: l.inst, from: l.month, to };
+    const closeSide: "buy" | "sell" = n > 0 ? "sell" : "buy";
+    return { type: "spread", player: P, name: "time", legs: [{ inst: l.inst, month: l.month, side: closeSide, qty: chunk }, { inst: l.inst, month: to, side: closeSide === "buy" ? "sell" : "buy", qty: chunk }] };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------- tier 4: products, gas, options, signals
 export const TIER4_UNLOCKS: Action["type"][] = [...TIER3_UNLOCKS, "option_order", "option_strategy", "set_runs", "set_slate", "book_regas", "buy_feed"];
 export const TIER4_LIMITS = (over: Partial<Record<InstrumentId, number>>) => ({ BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0, JKM: 0, ...over });
