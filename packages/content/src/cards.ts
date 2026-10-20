@@ -2,9 +2,9 @@
  * Concept cards: a titled panel with one diagram where it helps, three sentences, a worked number from the
  * player's own book, and a "show me" target. Tier 0 and tier 1 cards ship in milestone 1.
  */
-import { INSTRUMENTS, ckey, type State, fullCarry } from "@desk/engine";
+import { INSTRUMENTS, ckey, type State, fullCarry, cargoMark, physicalExposureBbl, GRADES, PORTS, windowText, legMark, CHOKEPOINT_SPECS, VESSEL_CLASSES } from "@desk/engine";
 
-export type Diagram = "none" | "bidask" | "curve_contango" | "curve_backwardation" | "margin" | "timeline" | "spread" | "crack" | "release";
+export type Diagram = "none" | "bidask" | "curve_contango" | "curve_backwardation" | "margin" | "timeline" | "spread" | "crack" | "release" | "incoterms" | "window" | "hedge" | "basis" | "chokepoint" | "freight";
 
 export interface Card {
   id: string;
@@ -133,6 +133,113 @@ export const CARDS: Card[] = [
     worked: (s) => { const leaks = s.news.filter((x) => x.source === "leak"); const resolved = leaks.filter((x) => x.resolved); return leaks.length ? `${leaks.length} leak${leaks.length > 1 ? "s" : ""} this level, ${resolved.length} resolved: ${resolved.map((x) => x.resolved!.outcome).join(", ") || "pending"}.` : "No leak yet. Watch Intel the day before the OPEC+ meeting."; },
     showMe: { screen: "intel", target: "news", label: "the leak and its resolution" },
     terms: [{ term: "leak", definition: "Unofficial information before an official decision." }, { term: "base rate", definition: "How often a kind of claim turns out true." }],
+  },
+
+  // ---------------------------------------------------------------- tier 2: the cargo and the hedge
+  {
+    id: "fob_cif_des", title: "FOB, CIF, DES", level: 5, diagram: "incoterms",
+    sentences: ["FOB means the seller's job ends at the load port rail: you fix the ship, you pay the freight, you carry the risk at sea.", "CIF means the seller delivers to the discharge port with freight and insurance in the price; DES is the same with title passing at the ship's rail on arrival.", "The letters decide who owns the barrels on the water, who pays the ship, and whose problem a late berth is."],
+    worked: (s) => { const c = s.cargoes[0]; return c ? `${GRADES[c.grade].name} ${c.id}: bought ${c.purchase.incoterm} ${PORTS[c.loadPort].name}${c.sale ? `, sold ${c.sale.incoterm} ${PORTS[c.sale.port].name}` : ""}. ${c.purchase.incoterm === "FOB" ? "You pay the freight: " + (c.freight.fixedUsd ? usd(c.freight.fixedUsd) + " fixed" : usd(c.freight.expectedUsd) + " expected") : "Freight is in the purchase price."}` : "No cargo yet: accept the offer on the Desk and read the terms."; },
+    showMe: { screen: "desk", target: "cargoes", label: "the cargo card" },
+    terms: [{ term: "FOB", definition: "Free on board: the buyer takes the oil at the load port and pays the ship." }, { term: "CIF", definition: "Cost, insurance and freight: the seller delivers to the discharge port." }, { term: "DES", definition: "Delivered ex ship: title passes at the discharge port on arrival." }],
+  },
+  {
+    id: "laycan_bl", title: "Laycan and B/L", level: 5, diagram: "timeline",
+    sentences: ["The laycan is the window in which the ship must present to load; miss it and the seller can walk away.", "The bill of lading is signed when loading completes: it is the date the pricing window anchors on and the moment the oil becomes yours.", "Everything downstream counts from the B/L: the window, the invoice, the hedge."],
+    worked: (s) => { const c = s.cargoes[0]; return c ? (c.blTick !== null ? `${c.id}: B/L signed on day ${Math.floor(c.blTick / 24)}; the purchase prices over days ${c.purchase.windowDays?.join(", ")}.` : `${c.id}: laycan days ${c.laycan[0]} to ${c.laycan[1]}; ${c.vesselId ? "the ship is fixed" : "no ship fixed yet"}.`) : "No cargo yet."; },
+    showMe: { screen: "desk", target: "cargoes", label: "the window timeline on the cargo card" },
+    terms: [{ term: "laycan", definition: "Laydays and cancelling: the window in which the vessel must arrive to load." }, { term: "bill of lading", definition: "The document signed when loading completes; its date anchors the pricing window." }],
+  },
+  {
+    id: "window_is_exposure", title: "A pricing window is an exposure", level: 5, diagram: "window",
+    sentences: ["A cargo bought at Dated plus a differential has no price until its window prints: until then every dollar the market moves is yours.", "Between the purchase window and the sale window you are long the barrels outright; before the purchase prices you are short them, and after the sale prices you are flat.", "The exposure is the unpriced share of each leg times the cargo size, and it changes every day a window prints."],
+    worked: (s) => { const e = physicalExposureBbl(s); const c = s.cargoes[0]; if (!c) return "No cargo yet."; const p = legMark(s, c, c.purchase); return `Net physical exposure ${Math.round(e.bbl).toLocaleString()} bbl: purchase ${p.unpriced.length} of ${p.n} days unpriced${c.sale ? `, sale ${legMark(s, c, c.sale).unpriced.length} of ${legMark(s, c, c.sale).n} days unpriced` : ", unsold"}. A $1 move is ${usd(Math.abs(e.bbl))}.`; },
+    showMe: { screen: "desk", target: "cargoes", label: "the hedge coverage bar" },
+    terms: [{ term: "pricing window", definition: "The days whose assessments average into a cargo's price." }, { term: "unpriced", definition: "Barrels whose price is not yet known: a flat-price exposure." }],
+  },
+  {
+    id: "lots_from_barrels", title: "Lots from barrels", level: 6, diagram: "hedge",
+    sentences: ["A Brent lot is 1,000 barrels, so a 600,000-barrel cargo is 600 lots: the hedge ratio is one when the lots match the barrels.", "Hedge the unpriced barrels, not the cargo: as each window day prints, a fifth of the exposure goes away and a fifth of the hedge should go with it.", "Round to whole lots and accept the residual; a hedge that is 2% off is a hedge, a hedge in the wrong month is a roll you have not done yet."],
+    worked: (s) => { const c = s.cargoes[0]; const e = physicalExposureBbl(s); const net = s.lots.filter((l) => l.inst === "BRENT").reduce((a, l) => a + l.qty, 0); return c ? `${c.bbl.toLocaleString()} bbl = ${Math.round(c.bbl / 1000)} lots. Net physical ${Math.round(e.bbl).toLocaleString()} bbl against ${net} Brent lots: ratio ${e.bbl !== 0 ? (-(net * 1000) / e.bbl).toFixed(2) : "n/a"}.` : "No cargo yet."; },
+    showMe: { screen: "markets", target: "ticket-qty", label: "the lots field, tagged hedge" },
+    terms: [{ term: "hedge ratio", definition: "Futures barrels sold over physical barrels exposed; one is flat." }],
+  },
+  {
+    id: "hedge_the_window", title: "Hedge the window, not the cargo", level: 6, diagram: "window",
+    sentences: ["The cargo is not the exposure; the unpriced days are. Sell futures as the purchase prices, buy them back as the sale prices.", "Use a futures month that outlives the window: a hedge in a contract that expires mid-voyage is cash-settled and leaves you naked.", "When the attribution shows a quiet flat-price leg and a live basis leg, the hedge is doing its job."],
+    worked: (s) => { const c = s.cargoes[0]; if (!c) return "No cargo yet."; const front = s.listed.BRENT[0]; const exp = s.contracts[`BRENT:${front}`]; const lastDay = Math.max(...(c.sale?.windowDays ?? c.purchase.windowDays ?? [c.laycan[1] + 10])); return `Front Brent ${front} expires on day ${Math.floor(exp.expiryTick / 24)}; your last window day is about day ${lastDay}: ${Math.floor(exp.expiryTick / 24) < lastDay ? "the front would expire inside the window, use the next month" : "the front outlives the window"}.`; },
+    showMe: { screen: "markets", target: "curve", label: "the expiry column" },
+    terms: [{ term: "expiry roll", definition: "Moving a hedge to a later month before the near one expires." }],
+  },
+  {
+    id: "basis_is_the_gap", title: "The gap between hedge and cargo is basis", level: 6, diagram: "basis",
+    sentences: ["Futures hedge the flat price; the cargo prices on Dated plus a differential, and Dated minus futures moves on its own.", "What is left after the hedge is basis: the Dated differential, the grade differential, and timing between the window and the contract.", "Basis is smaller than flat price and it is where a physical trader earns or loses the margin."],
+    worked: (s) => { const b = s.pnl.attribution.filter((r) => r.leg === "basis").reduce((a, r) => a + r.amount, 0); const f = s.pnl.attribution.filter((r) => r.leg === "flat").reduce((a, r) => a + r.amount, 0); return `This level: flat-price leg ${usd(f)}, basis leg ${usd(b)}. Dated minus front is ${s.factors.datedDiff.toFixed(2)} now.`; },
+    showMe: { screen: "book", target: "waterfall", label: "the basis bar" },
+    terms: [{ term: "basis risk", definition: "The part of a hedged position the hedge does not cover: differentials and timing." }],
+  },
+  {
+    id: "basis_risk", title: "Basis risk", level: 7, diagram: "basis",
+    sentences: ["A grade differential is a price of its own: Bonny Light over Dated moves with West African loadings and with what refiners want this month.", "An unsold cargo is long that differential; selling it fixes it. Waiting to sell is a view on the differential whether you meant it or not.", "A quality claim is basis too: the barrels were not quite what the differential paid for."],
+    worked: (s) => { const c = s.cargoes[0]; return c ? `${GRADES[c.grade].name} market differential ${s.factors.gradeDiffs[c.grade] >= 0 ? "+" : ""}${s.factors.gradeDiffs[c.grade].toFixed(2)} over ${GRADES[c.grade].benchmark}; you bought at ${c.purchase.diff >= 0 ? "+" : ""}${c.purchase.diff.toFixed(2)}${c.sale ? `, sold at ${c.sale.diff >= 0 ? "+" : ""}${c.sale.diff.toFixed(2)} over ${c.sale.basis}` : ", unsold"}.` : "No cargo yet."; },
+    showMe: { screen: "desk", target: "cargoes", label: "the differential on the cargo card" },
+    terms: [{ term: "grade differential", definition: "A grade's price over or under its benchmark, set by quality and location." }],
+  },
+  {
+    id: "why_dubai", title: "Why Dubai", level: 7, diagram: "spread",
+    sentences: ["Asia prices crude against Dubai, a medium sour benchmark; Europe prices against Dated Brent, light and sweet.", "A cargo bought on Dated and sold on Dubai is long Brent-Dubai, the East-West spread, until the sale prices.", "The East-West spread moves with Gulf loadings, Asian runs and the risk index; hedge it with the Dubai swap, or know you have not."],
+    worked: (s) => { const c = s.cargoes[0]; const ew = s.factors.dubaiEW; const dub = s.lots.filter((l) => l.inst === "DUBAI").reduce((a, l) => a + l.qty, 0); return `Brent minus Dubai is ${ew.toFixed(2)} now. ${c && c.sale && c.sale.basis === "DUBAI" ? `Your sale prices on Dubai: ${Math.round(c.bbl / 1000)} lots of East-West exposure, ${dub} Dubai swap lots held against it.` : "No Dubai-priced sale yet."}`; },
+    showMe: { screen: "markets", target: "spreads", label: "the Brent-Dubai row" },
+    terms: [{ term: "Dubai", definition: "The medium sour benchmark Asian cargoes price against." }, { term: "East-West spread", definition: "Brent minus Dubai: the spread between the Atlantic and Asian benchmarks." }],
+  },
+  {
+    id: "efp", title: "EFP: paper for the cargo", level: 7, diagram: "hedge",
+    sentences: ["An exchange of futures for physical fixes the unpriced part of a cargo at today's assessment and hands over the matching futures at the same price.", "No spread is crossed: the paper and the physical change hands together, which is why EFPs price cargoes without a window fight.", "Use it to turn a floating cargo into a fixed one in a single step when you have the paper against it."],
+    worked: (s) => { const c = s.cargoes.find((x) => x.purchase.fixed === null || (x.sale && x.sale.fixed === null)); return c ? `${c.id}: the ${c.purchase.fixed === null ? "purchase" : "sale"} still has unpriced days; an EFP would fix them at today's ${c.purchase.basis} assessment.` : "Every leg is priced: nothing to EFP."; },
+    showMe: { screen: "desk", target: "cargoes", label: "the EFP button on the cargo card" },
+    terms: [{ term: "EFP", definition: "Exchange of futures for physical: fixing a cargo price by handing over futures at the same price." }],
+  },
+  {
+    id: "window_mismatch", title: "Window mismatch is a spread", level: 8, diagram: "window",
+    sentences: ["Buy on a month average and sell on five days a month later and you are short the first period and long the second: a time spread you did not choose.", "The curve already prices that gap: in contango it pays you, in backwardation it costs you, before the market moves at all.", "Hedge it with a time spread in the same direction as the gap, or change the window in the contract."],
+    worked: (s) => { const t = s.pnl.attribution.filter((r) => r.leg === "time_spread").reduce((a, r) => a + r.amount, 0); const c = s.cargoes[0]; return c ? `${c.id}: purchase prices ${windowText(c.purchase.window)}${c.sale ? `, sale ${windowText(c.sale.window)}` : ""}. Time-spread leg so far ${usd(t)}; the front Brent spread is ${s.factors.spread1.BRENT.toFixed(2)} a month.` : "No cargo yet."; },
+    showMe: { screen: "book", target: "waterfall", label: "the time-spread bar" },
+    terms: [{ term: "window mismatch", definition: "Purchase and sale windows in different periods: an implicit time spread." }],
+  },
+  {
+    id: "backwardation_taxes", title: "Backwardation taxes the long cargo", level: 8, diagram: "curve_backwardation",
+    sentences: ["A cargo priced early and sold late in a backwardated market sells into a lower forward price: the curve charges you for carrying it.", "Each day the sale window stays open, its forward value rolls down; the mark bleeds without the flat price moving.", "In contango the same cargo earns carry, which is why floating storage appears when the curve pays for it."],
+    worked: (s) => `Front Brent spread ${s.factors.spread1.BRENT.toFixed(2)} $/bbl a month: ${s.factors.spread1.BRENT < 0 ? "backwardation; a month of delay costs about " + usd(Math.abs(s.factors.spread1.BRENT) * (s.cargoes[0]?.bbl ?? 600000)) : "contango; a month of delay earns about " + usd(s.factors.spread1.BRENT * (s.cargoes[0]?.bbl ?? 600000))} on the cargo.`,
+    showMe: { screen: "markets", target: "curve", label: "the Brent curve" },
+    terms: [{ term: "roll-down", definition: "A forward price converging along the curve as its date approaches." }],
+  },
+  {
+    id: "deemed_bl", title: "Deemed B/L", level: 8, diagram: "timeline",
+    sentences: ["A deemed bill of lading fixes the pricing anchor on a stated date whatever the ship does.", "It takes the timing out of the seller's hands: a late ship no longer moves the window.", "Use it when the window matters more than the voyage; pay for it in the differential."],
+    worked: (s) => { const c = s.cargoes.find((x) => x.purchase.window.kind === "deemed" || x.sale?.window.kind === "deemed"); return c ? `${c.id} has a deemed window: ${windowText(c.purchase.window.kind === "deemed" ? c.purchase.window : c.sale!.window)}.` : "No deemed window on the book; the tenders say when one is on offer."; },
+    showMe: { screen: "desk", target: "tenders", label: "the window column in the tenders" },
+    terms: [{ term: "deemed B/L", definition: "A contractual pricing date used instead of the actual bill of lading date." }],
+  },
+  {
+    id: "freight_share", title: "Freight is a share of the barrel", level: 9, diagram: "freight",
+    sentences: ["A voyage charter is a lump sum: hire per day times the days, plus port time and the owner's margin; divide by the barrels and it is a price per barrel.", "On a VLCC from the Gulf to Rotterdam that share is a dollar or two; on a small ship or a long detour it can be the whole margin.", "Worldscale is the same number expressed against a flat rate; it is a card, not a quote, on this desk."],
+    worked: (s) => { const c = s.cargoes[0]; if (!c) return "No cargo yet."; const f = c.freight.fixedUsd ?? c.freight.expectedUsd; return `${c.id}: freight ${usd(f)} on ${c.bbl.toLocaleString()} bbl = ${(f / c.bbl).toFixed(2)} $/bbl, ${((f / c.bbl) / Math.max(1, s.factors.brentPrompt) * 100).toFixed(1)}% of the barrel. Freight index ${s.factors.freightIndex.toFixed(2)} (1 = base hire, stylised).`; },
+    showMe: { screen: "map", target: "route", label: "the route callout" },
+    terms: [{ term: "voyage charter", definition: "Hiring a ship for one voyage at a lump sum or per tonne." }, { term: "Worldscale", definition: "A freight scale: a percentage of a published flat rate per route." }, { term: "demurrage", definition: "What the charterer pays when a ship waits beyond its laytime." }],
+  },
+  {
+    id: "chokepoint_is_a_spread", title: "A chokepoint is a time spread and a freight shock at once", level: 9, diagram: "chokepoint",
+    sentences: ["Close a strait and every ship behind it takes the long way round: tonne-miles rise, hire rises, and the barrels arrive later.", "Later barrels at the destination tighten the prompt there and loosen it at the source: a geographic spread and a time spread move together.", "A ship already at the strait chooses between war risk and waiting, or the detour; the cost of each is on the callout."],
+    worked: (s) => { const cps = Object.values(s.chokepoints).filter((c) => c.status !== "open"); return cps.length ? cps.map((c) => `${CHOKEPOINT_SPECS[c.id].name} ${c.status} since tick ${c.since}: war risk ${CHOKEPOINT_SPECS[c.id].warRiskUsdPerBbl.value.toFixed(2)} $/bbl, convoy delay ${CHOKEPOINT_SPECS[c.id].restrictedDelayDays.value} days (stylised).`).join(" ") : "Every passage is open. Freight index " + s.factors.freightIndex.toFixed(2) + "."; },
+    showMe: { screen: "map", target: "chokepoints", label: "the chokepoints on the map" },
+    terms: [{ term: "chokepoint", definition: "A narrow passage a large share of seaborne oil moves through." }, { term: "war risk", definition: "An insurance premium to transit a dangerous passage." }],
+  },
+  {
+    id: "storage_on_water", title: "Storage on water", level: 9, diagram: "curve_contango",
+    sentences: ["A ship at anchor is a tank that costs its hire every day; the contango has to pay more than that for the wait to make sense.", "When it does, cargoes slow down, anchor off the discharge port, and sell into a later, higher window.", "When it does not, every day at anchor is a loss; the number to watch is the front spread against hire per barrel per day."],
+    worked: (s) => { const c = s.cargoes[0]; const v = s.voyages.find((x) => x.id === c?.voyageId); if (!c || !v) return "No ship under way."; const perDay = v.hireUsdPerDay / c.bbl; const carryPerDay = s.factors.spread1.BRENT / 30.4; return `Hire ${usd(v.hireUsdPerDay)} a day = ${perDay.toFixed(3)} $/bbl a day; the curve pays ${carryPerDay.toFixed(3)} $/bbl a day of contango: ${carryPerDay > perDay ? "storage on water pays" : "waiting loses money"}.`; },
+    showMe: { screen: "desk", target: "cargoes", label: "the anchor control on the cargo card" },
+    terms: [{ term: "floating storage", definition: "Holding oil on a chartered ship at anchor to sell into a later window." }],
   },
   {
     id: "turnaround_is_supply", title: "A turnaround is a supply event", level: 14, diagram: "crack",

@@ -55,7 +55,7 @@ Pass: a correct debrief on which structure paid the long and why; roll before ea
   pass: (s) => rolled(s) >= 2 && !expiredWithLots(s) && !s.risk.varBreachedAtClose,
   passRuleText: "Two rolls, nothing expired in the book, VaR inside the limit, and a correct debrief.",
   quiz,
-  par: 74395.55, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: 76540.14, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [1, 2, 3, 5, 6, 7, 8, 9, 10, 11],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);

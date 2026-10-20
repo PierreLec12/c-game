@@ -19,7 +19,7 @@ export const level03: LevelSpec = {
   days: 20, startDate: "2027-01-04", capital: 5e6, creditLine: 20e6, lives: 3,
   instruments: ["BRENT", "WTI", "RBOB", "ULSD"], unlocks: [...TIER1_UNLOCKS, "spread", "roll"],
   regime: "calm", world: { oecdInvGap: 0, usInvGap: 0, refineryRuns: 0.9 }, factors: { brentRef: refFor(75, 0) },
-  limits: { var95: 300000, netLots: { BRENT: 100, WTI: 100, RBOB: 40, ULSD: 40, HH: 0, TTF: 0 }, grossLots: 300, stopLoss: 600000, drawdown: 800000, concentration: 1 },
+  limits: { var95: 300000, netLots: { BRENT: 100, WTI: 100, RBOB: 40, ULSD: 40, HH: 0, TTF: 0, DUBAI: 0 }, grossLots: 300, stopLoss: 600000, drawdown: 800000, concentration: 1 },
   events: [
     { id: "cushing", kind: "inventory_shock", day: 4, hour: 15, params: { usInvGap: 12, headline: "Cushing builds 12 mb as a new pipeline fills the hub", body: "Landlocked crude piles up at Cushing. WTI has to cheapen against Brent until it pays to move the barrel to the coast and ship it." } },
     { id: "turnaround", kind: "refinery_turnaround", day: 9, hour: 9, params: { runs: -0.1, days: 10, headline: "Gulf Coast turnaround season starts early: runs cut 10%", body: "Several plants go down for maintenance. Less gasoline and diesel is made; cracks strengthen while they are out." } },
@@ -50,7 +50,7 @@ Pass: at least two spread packages with spread P&L in the attribution, gross exp
   pass: (s) => packages(s) >= 2 && Math.abs(leg(s, "basis")) + Math.abs(leg(s, "crack")) > 0 && !s.risk.breaches.some((b) => b.limit === "grossLots"),
   passRuleText: "Two packages, spread P&L in the attribution, gross under the limit at every close.",
   quiz,
-  par: 61849.6, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: 60055.6, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [2, 3, 4, 5, 6, 7, 8, 9, 11, 12],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);

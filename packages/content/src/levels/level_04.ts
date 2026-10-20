@@ -83,7 +83,7 @@ Pass: inside the release limit every time, and a correct debrief on what was pri
   pass: (s) => releaseDiscipline(s) === "done" && !s.risk.varBreachedAtClose,
   passRuleText: `At most ${RELEASE_LIMIT} lots into every release and the meeting, VaR inside the limit, and a correct debrief.`,
   quiz,
-  par: 97680, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: 106880, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [1, 2, 3, 4, 6, 7, 8, 9, 11, 12],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);

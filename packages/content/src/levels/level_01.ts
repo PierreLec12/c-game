@@ -51,7 +51,7 @@ Pass: positive P&L, no margin call, VaR inside the limit at every close.`,
   pass: (s) => s.pnl.total > 0 && s.finance.marginCalls === 0 && !s.risk.varBreachedAtClose,
   passRuleText: "Positive P&L, no margin call, VaR inside the limit at every close.",
   quiz,
-  par: 104176, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: 102619, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [1, 2, 3, 5, 6, 7, 8, 9, 10, 11],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);
