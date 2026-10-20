@@ -2,7 +2,7 @@ import { test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { LEVELS } from "@desk/content";
 
-type Harness = { demo: (level: number, seed: number, tick: number) => void };
+type Harness = { demo: (level: number, seed: number, tick: number) => void; finish: () => void };
 const demo = (page: Parameters<Parameters<typeof test>[1]>[0]["page"], level: number, seed: number, tick: number) =>
   page.evaluate(([l, s, t]) => (window as unknown as { __desk: Harness }).__desk.demo(l, s, t), [level, seed, tick] as const);
 
@@ -53,12 +53,14 @@ test("screenshots of every screen at a fixed tick", async ({ page }) => {
 // ---------------------------------------------------------------- milestone 4: options, the refinery, the LNG chain, signals
 // Levels 14 to 17 may not be registered yet; each capture skips until its level exists in LEVELS.
 const hasLevel = (id: number) => LEVELS.some((l) => l.id === id);
-/** An action can unlock a card, which opens a modal over the screen: dismiss every one that is open before moving on. */
+/** An action can unlock a card, which opens a modal over the screen, and a passed level opens a rank card: dismiss every one that is open before moving on. */
 async function dismissCards(page: Parameters<Parameters<typeof test>[1]>[0]["page"]): Promise<void> {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     const gotIt = page.getByRole("button", { name: "Got it" });
-    if (!(await gotIt.isVisible().catch(() => false))) return;
-    await gotIt.click();
+    const rankClose = page.locator("#rank-card-close");
+    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    else if (await rankClose.isVisible().catch(() => false)) await rankClose.click();
+    else return;
     await page.waitForTimeout(100);
   }
 }
@@ -145,4 +147,45 @@ test("map-signals: signal markers on the map (level 17)", async ({ page }) => {
   await page.getByRole("link", { name: "Map", exact: true }).click();
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${shotsDir()}map-signals.png`, fullPage: false });
+});
+
+// ---------------------------------------------------------------- milestone 5: Partner, the sandbox, the leaderboard
+// Level 20 (Partner) marks the milestone; each capture skips until it is registered in LEVELS.
+const finish = (page: Parameters<Parameters<typeof test>[1]>[0]["page"]) => page.evaluate(() => (window as unknown as { __desk: Harness }).__desk.finish());
+
+test("academy-sandbox: the sandbox panel (any level, any seed, any knob, no score)", async ({ page }) => {
+  test.skip(!hasLevel(20), "level 20 (Partner) is not registered yet");
+  await page.goto("/");
+  await page.waitForTimeout(300);
+  await page.locator("#sandbox").scrollIntoViewIfNeeded();
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${shotsDir()}academy-sandbox.png`, fullPage: false });
+});
+
+test("bridge-partner: level 20 at tick 60, the endless level with its End button", async ({ page }) => {
+  test.skip(!hasLevel(20), "level 20 (Partner) is not registered yet");
+  await page.goto("/");
+  await demo(page, 20, 1, 60);
+  await page.waitForTimeout(300);
+  await page.getByRole("link", { name: "Bridge", exact: true }).click();
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: `${shotsDir()}bridge-partner.png`, fullPage: false });
+});
+
+test("debrief-leaderboard: a finished level ranked against the player's own past runs", async ({ page }) => {
+  test.skip(!hasLevel(20), "level 20 (Partner) is not registered yet");
+  await page.goto("/");
+  // three finished runs of level 1 on three seeds, each answered and recorded; the third is the one on screen
+  for (const seed of [1, 2, 3]) {
+    await demo(page, 1, seed, 1000);
+    await page.waitForTimeout(200);
+    await finish(page);
+    await page.waitForTimeout(300);
+    await dismissCards(page);
+  }
+  await page.getByRole("link", { name: "Debrief", exact: true }).click();
+  await page.waitForTimeout(400);
+  await dismissCards(page);
+  await page.locator("#leaderboard").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: `${shotsDir()}debrief-leaderboard.png`, fullPage: false });
 });

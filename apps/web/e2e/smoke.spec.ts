@@ -1,12 +1,14 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-/** Cards auto-pause the clock and open a modal; dismiss every one that is open before acting. */
+/** Cards auto-pause the clock and open a modal, and a passed level opens a rank card; dismiss every one that is open before acting. */
 async function dismissCards(page: Page): Promise<void> {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 6; i++) {
     const gotIt = page.getByRole("button", { name: "Got it" });
-    if (!(await gotIt.isVisible().catch(() => false))) return;
-    await gotIt.click();
+    const rankClose = page.locator("#rank-card-close");
+    if (await gotIt.isVisible().catch(() => false)) await gotIt.click();
+    else if (await rankClose.isVisible().catch(() => false)) await rankClose.click();
+    else return;
     await page.waitForTimeout(100);
   }
 }
@@ -49,9 +51,14 @@ test("level 0 end to end, offline, with an axe pass on every screen", async ({ p
   }
   await expect(page.getByText(/^6 of 6 right\./)).toBeVisible();
   await page.getByRole("button", { name: "End the level now" }).click();
+  // a passed level gets a burst and a rank card with the score, the rank and the achievements
+  await expect(page.getByRole("dialog", { name: /Orientation/ })).toBeVisible();
+  await expect(page.locator(".rankcard")).toContainText("Rank");
   await dismissCards(page);
   await page.getByRole("link", { name: "Debrief", exact: true }).click();
   await expect(page.getByText("passed").first()).toBeVisible();
+  // the run is on the leaderboard against the player's own past runs
+  await expect(page.locator("#leaderboard")).toContainText(/1st of 1/);
   // accessibility: axe on each screen
   for (const screen of ["Bridge", "Markets", "Book & risk", "Intel", "Finance", "Academy", "Debrief"]) {
     await page.getByRole("link", { name: screen, exact: true }).click();

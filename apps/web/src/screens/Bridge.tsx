@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import { anchors, ckey, formatClock, grossLots, INSTRUMENTS, monthLabel, nextRelease, type InstrumentId } from "@desk/engine";
-import { LEVELS, MENTOR } from "@desk/content";
+import { anchors, ckey, formatClock, getLevel, grossLots, INSTRUMENTS, monthLabel, nextRelease, type InstrumentId } from "@desk/engine";
+import { isSandboxId, MENTOR } from "@desk/content";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
 import { Gauge } from "../charts/Gauge";
@@ -11,28 +11,35 @@ const usdK = (x: number) => (Math.abs(x) >= 1e6 ? "$" + (x / 1e6).toFixed(1) + "
 
 export function Bridge() {
   const state = useGame((g) => g.state);
+  const seed = useGame((g) => g.seed);
   const setSpeed = useGame((g) => g.setSpeed);
   const submit = useGame((g) => g.submit);
   if (!state) return <div className="panel"><h1>Bridge</h1><p className="muted">No level running. <Link to="/academy">Open the Academy</Link> and start level 0: it takes two minutes.</p></div>;
-  const spec = LEVELS.find((l) => l.id === state.level.id)!;
+  const spec = getLevel(state.level.id); // the registry, not LEVELS: a sandbox spec is registered but not in the curriculum
+  const sandbox = isSandboxId(state.level.id);
   const rel = nextRelease(state);
   const gross = grossLots(state);
   const lastMentor = state.level.mentorLines[state.level.mentorLines.length - 1];
   const refs = { brentRef: spec.factors.brentRef ?? 75, hhRef: spec.factors.hhRef ?? 3, ttfRef: spec.factors.ttfRef ?? 35 };
   const fair = Math.exp(anchors(state.world, state.factors, refs, state.startDay + Math.floor(state.tick / 24)).logBrent);
   const front = state.quotes[ckey("BRENT", state.listed.BRENT[0])];
+  const running = state.level.status === "running";
+  const openTenders = state.tenders.filter((t) => t.status === "open").length;
   return (
     <div className="grid cols-2">
       <div className="panel accent-crude">
-        <h1>Level {state.level.id}: {state.level.title}</h1>
+        <h1>{sandbox ? state.level.title : `Level ${state.level.id}: ${state.level.title}`}</h1>
         <div className="muted">{spec.subtitle}</div>
         <p className="briefing small">{spec.briefing}</p>
         <div className="flex">
-          {state.level.status === "running" && <button className="primary" onClick={() => setSpeed(1)}>Start the clock (space)</button>}
-          {state.level.status === "running" && state.level.objectives.every((o) => o.status === "done") && <button onClick={() => submit({ type: "end_level", player: "p1" })}>End the level now</button>}
-          {state.level.status !== "running" && <Link to="/debrief"><button className="primary">Open the debrief</button></Link>}
+          {running && <button className="primary" onClick={() => setSpeed(1)}>Start the clock (space)</button>}
+          {running && spec.endless && <button className="danger" id="end-level" onClick={() => submit({ type: "end_level", player: "p1" })}>End the level</button>}
+          {running && !spec.endless && state.level.objectives.every((o) => o.status === "done") && <button onClick={() => submit({ type: "end_level", player: "p1" })}>End the level now</button>}
+          {!running && <Link to="/debrief"><button className="primary">Open the debrief</button></Link>}
           <span className="muted small">Pass: {spec.passRuleText}</span>
         </div>
+        {spec.endless && <div className="small" style={{ marginTop: 8 }} id="endless-note">{state.level.title} runs until you end it; the score compares you to the solution bot's run on this seed (seed <span className="mono">{seed}</span>).</div>}
+        {sandbox && <div className="small muted" style={{ marginTop: 8 }}>Sandbox: seed <span className="mono">{seed}</span>. Nothing from this run is recorded.</div>}
       </div>
       <div className="panel accent-risk">
         <h2>Risk</h2>
@@ -52,7 +59,7 @@ export function Bridge() {
       </div>
       <div className="panel accent-mentor">
         <h2>{MENTOR.name}, mentor</h2>
-        <p style={{ fontSize: 15 }}>{lastMentor ? lastMentor.text : "…"}</p>
+        <p style={{ fontSize: 15 }}>{lastMentor ? lastMentor.text : spec.mentorSilent ? <span className="muted">Silent at this tier: she answers only what you ask.</span> : "…"}</p>
         <AskMentor />
       </div>
       <div className="panel">
@@ -74,8 +81,8 @@ export function Bridge() {
       <div className="panel">
         <h2>Calendar</h2>
         {rel ? <div>Next: <strong>{rel.name}</strong> at {formatClock(state.startDay, rel.tick)}{rel.consensus ? <> · consensus <Fig v={rel.consensus.v} fmt="signed" decimals={1} what={`${rel.name} consensus (${rel.unit})`} why={rel.consensus.why} at={rel.consensus.at} /> {rel.unit}</> : <span className="muted"> · consensus published on the day</span>}</div> : <div className="muted">No scheduled release left in this level.</div>}
-        <div className="small muted" style={{ marginTop: 6 }}>Open tenders: <span className="notyet">not yet (physical unlocks at level 5)</span></div>
-        <div className="small muted">Level ends {formatClock(state.startDay, state.level.endTick)}.</div>
+        <div className="small muted" style={{ marginTop: 6 }}>Open tenders: {state.level.unlockedActions.includes("accept_tender") ? <Link to="/desk">{openTenders}</Link> : <span className="notyet">not yet (physical unlocks at level 5)</span>}</div>
+        <div className="small muted">{spec.endless ? `Runs until you end it; ${spec.days} days is only the clock's ceiling (${formatClock(state.startDay, state.level.endTick)}).` : `Level ends ${formatClock(state.startDay, state.level.endTick)}.`}</div>
       </div>
       <Drills />
       <div className="panel">
