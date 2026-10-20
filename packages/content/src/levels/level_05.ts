@@ -22,7 +22,7 @@ export const level05: LevelSpec = {
   days: 30, startDate: "2027-03-01", capital: 20e6, creditLine: 150e6, lives: 3,
   instruments: ["BRENT"], unlocks: TIER2_UNLOCKS.filter((u) => !["order", "spread", "roll", "efp"].includes(u)),
   regime: "normal", world: { oecdInvGap: -6, crudeBalance: 0 }, factors: { brentRef: refFor(75, -6) },
-  limits: { var95: 4e6, netLots: TIER2_LIMITS(700), grossLots: 1400, stopLoss: 8e6, drawdown: 9e6, concentration: 1 },
+  limits: { var95: 4e6, netLots: TIER2_LIMITS(700), grossLots: 1400, stopLoss: 8e6, drawdown: 9e6, concentration: 50 },
   events: [
     { id: "offer", kind: "tender", day: 0, hour: 9, params: { counterparty: "NORTHSEA_MAJOR", side: "offer", grade: "FORTIES", incoterm: "FOB", port: "SULLOM_VOE", windowKind: "after_bl", windowDays: 5, laycanStart: 5, laycanDays: 2, openHours: 72, note: "Northsea Major offers one Aframax of Forties FOB Sullom Voe, laycan days 5-7, Dated plus the differential shown, pricing 5 days after B/L." } },
     { id: "bid", kind: "tender", day: 1, hour: 10, params: { counterparty: "RHINE_REFINING", side: "bid", grade: "FORTIES", incoterm: "CIF", port: "ROTTERDAM", windowKind: "after_discharge", windowDays: 5, laycanStart: 9, laycanDays: 4, openHours: 120, note: "Rhine Refining bids for a Forties cargo CIF Rotterdam, discharge days 9-13, Dated plus the differential shown, pricing 5 days after discharge." } },

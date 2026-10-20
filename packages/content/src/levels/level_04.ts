@@ -46,7 +46,7 @@ export const level04: LevelSpec = {
   days: 19, startDate: "2027-01-04", capital: 5e6, creditLine: 20e6, lives: 3,
   instruments: ["BRENT"], unlocks: TIER1_UNLOCKS,
   regime: "calm", world: { oecdInvGap: -12, crudeBalance: -400, targets: { crudeBalance: -400 } }, prehistoryWorld: { oecdInvGap: 0 }, factors: { brentRef: refFor(75, 0) },
-  limits: { var95: 150000, netLots: { ...TIER1_LIMITS_NONE, BRENT: 120 }, grossLots: 240, stopLoss: 500000, drawdown: 600000, concentration: 1 },
+  limits: { var95: 150000, netLots: { ...TIER1_LIMITS_NONE, BRENT: 120 }, grossLots: 240, stopLoss: 500000, drawdown: 600000, concentration: 50 },
   events: [
     { id: "eia1", kind: "inventory_release", day: RELEASE_DAYS[0], hour: 15 },
     { id: "pos1", kind: "positioning_report", day: 4, hour: 20, params: { crowded: true } },

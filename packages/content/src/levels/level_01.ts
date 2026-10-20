@@ -21,7 +21,7 @@ export const level01: LevelSpec = {
   days: 10, startDate: "2027-01-04", capital: 5e6, creditLine: 20e6, lives: 3,
   instruments: ["BRENT"], unlocks: TIER1_UNLOCKS,
   regime: "calm", world: { oecdInvGap: GAP, crudeBalance: -500, targets: { crudeBalance: -500 } }, prehistoryWorld: { oecdInvGap: 0 }, factors: { brentRef: refFor(75, 0) },
-  limits: { var95: 150000, netLots: { ...TIER1_LIMITS_NONE, BRENT: 150 }, grossLots: 300, stopLoss: 500000, drawdown: 600000, concentration: 1 },
+  limits: { var95: 150000, netLots: { ...TIER1_LIMITS_NONE, BRENT: 150 }, grossLots: 300, stopLoss: 500000, drawdown: 600000, concentration: 50 },
   events: [
     { id: "rumour", kind: "headline_move", day: 3, hour: 10, params: { pct: -0.025, headline: "Report: OPEC+ weighing an output increase; prompt drops", body: "An unsourced report. The prompt falls 2.5% in the hour. Nothing in the balance has changed yet." } },
     { id: "denial", kind: "headline_move", day: 4, hour: 9, params: { pct: 0.0256, headline: "OPEC+ denies the increase report; prompt recovers", body: "The secretariat calls yesterday's report baseless. The move unwinds." } },

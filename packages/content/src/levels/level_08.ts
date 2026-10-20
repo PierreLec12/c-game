@@ -30,7 +30,7 @@ export const level08: LevelSpec = {
   days: 45, startDate: "2027-03-01", capital: 20e6, creditLine: 150e6, lives: 3,
   instruments: ["BRENT"], unlocks: TIER2_UNLOCKS,
   regime: "normal", world: { oecdInvGap: -22, crudeBalance: -200, targets: { crudeBalance: -200 } }, factors: { brentRef: refFor(78, -22) },
-  limits: { var95: 5e6, netLots: TIER2_LIMITS(2500), grossLots: 5000, stopLoss: 6e6, drawdown: 7e6, concentration: 1 },
+  limits: { var95: 5e6, netLots: TIER2_LIMITS(2500), grossLots: 5000, stopLoss: 6e6, drawdown: 7e6, concentration: 50 },
   events: [
     { id: "offer", kind: "tender", day: 0, hour: 9, params: { counterparty: "GULF_NATIONAL", side: "offer", grade: "ARAB_LIGHT", bbl: 1000000, incoterm: "FOB", port: "RAS_TANURA", basis: "DATED", windowKind: "month_avg_bl", laycanStart: 5, laycanDays: 2, openHours: 72, note: "Gulf National offers a Suezmax of Arab Light FOB Ras Tanura, laycan days 5-7, Dated plus the differential shown, priced on the average of the B/L month." } },
     { id: "bid", kind: "tender", day: 2, hour: 10, params: { counterparty: "RHINE_REFINING", side: "bid", grade: "ARAB_LIGHT", bbl: 1000000, incoterm: "CIF", port: "ROTTERDAM", basis: "DATED", windowKind: "after_discharge", windowDays: 5, laycanStart: 31, laycanDays: 5, openHours: 96, note: "Rhine Refining bids for an Arab Light cargo CIF Rotterdam, discharge days 31-36, Dated plus the differential shown, pricing 5 days after discharge." } },
@@ -62,7 +62,7 @@ Pass: name the exposure in the debrief and hedge it with a time-spread package o
   pass: (s) => delivered(s) && spreadHedged(s),
   passRuleText: "Cargo delivered, the mismatch hedged with a calendar-spread package of at least half the cargo, and a correct debrief.",
   quiz,
-  par: -1679488.99, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: -1088468.99, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);

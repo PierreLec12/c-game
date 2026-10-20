@@ -48,7 +48,7 @@ export const level07: LevelSpec = {
   days: 45, startDate: "2027-03-01", capital: 20e6, creditLine: 150e6, lives: 3,
   instruments: ["BRENT", "DUBAI"], unlocks: TIER2_UNLOCKS,
   regime: "normal", world: { oecdInvGap: -4, crudeBalance: 0, geo: 0.25 }, factors: { brentRef: refFor(76, -4, 0.25) },
-  limits: { var95: 4e6, netLots: TIER2_LIMITS(1200), grossLots: 2400, stopLoss: 5e6, drawdown: 6e6, concentration: 1 },
+  limits: { var95: 4e6, netLots: TIER2_LIMITS(1200), grossLots: 2400, stopLoss: 5e6, drawdown: 6e6, concentration: 50 },
   events: [
     { id: "offer", kind: "tender", day: 0, hour: 9, params: { counterparty: "DELTA_INDEPENDENT", side: "offer", grade: "BONNY_LIGHT", incoterm: "FOB", port: "BONNY", windowKind: "after_bl", windowDays: 5, laycanStart: 4, laycanDays: 2, openHours: 72, diffVsFair: -0.15, note: "Delta Independent offers a Suezmax of Bonny Light FOB Bonny, laycan days 4-6, Dated plus the differential shown (cheap: they need the cash), pricing 5 days after B/L." } },
     { id: "diff", kind: "grade_diff_shock", day: 8, hour: 11, params: { grade: "BONNY_LIGHT", delta: -0.8, headline: "Bonny Light differential weakens 80 cents as Nigerian loadings rise", body: "More West African cargoes on offer this month than Europe wants. An unsold Bonny cargo is worth 80 cents a barrel less than it was this morning." } },
@@ -82,7 +82,7 @@ Use an EFP to fix a leg when you have paper against it. Pass: cargo sold East wi
   pass: (s) => delivered(s) && soldEast(s) && claimHandled(s),
   passRuleText: "Cargo sold East on Dubai and delivered, the claim handled, the East-West exposure hedged or explained in the debrief.",
   quiz,
-  par: -869849.04, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: -897451.06, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);

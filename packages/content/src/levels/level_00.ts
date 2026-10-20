@@ -12,7 +12,7 @@ export const level00: LevelSpec = {
   instruments: ["BRENT"],
   unlocks: ["order", "close", "cancel_order", "open_card", "ask_mentor", "answer_drill", "answer_quiz", "end_level"],
   regime: "calm", world: { oecdInvGap: 0 }, factors: { brentRef: 75 },
-  limits: { var95: 1e6, netLots: { ...TIER1_LIMITS_NONE, BRENT: 50 }, grossLots: 100, stopLoss: 1e6, drawdown: 1e6, concentration: 1 },
+  limits: { var95: 1e6, netLots: { ...TIER1_LIMITS_NONE, BRENT: 50 }, grossLots: 100, stopLoss: 1e6, drawdown: 1e6, concentration: 50 },
   events: [],
   briefing: `One session. This is the desk: the clock runs an hour a tick, the ticker is the market, the ticket has a bid and an ask, and the Book shows what you own and what it is worth.
 

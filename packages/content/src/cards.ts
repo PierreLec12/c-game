@@ -2,9 +2,9 @@
  * Concept cards: a titled panel with one diagram where it helps, three sentences, a worked number from the
  * player's own book, and a "show me" target. Tier 0 and tier 1 cards ship in milestone 1.
  */
-import { INSTRUMENTS, ckey, type State, fullCarry, cargoMark, physicalExposureBbl, GRADES, PORTS, windowText, legMark, CHOKEPOINT_SPECS, VESSEL_CLASSES } from "@desk/engine";
+import { INSTRUMENTS, ckey, type State, fullCarry, cargoMark, physicalExposureBbl, GRADES, PORTS, windowText, legMark, CHOKEPOINT_SPECS, VESSEL_CLASSES, COUNTERPARTIES, counterpartyExposure, lineAvailable, lcCommitted, tankInventory, parcelDiff, FINANCE, CREDIT } from "@desk/engine";
 
-export type Diagram = "none" | "bidask" | "curve_contango" | "curve_backwardation" | "margin" | "timeline" | "spread" | "crack" | "release" | "incoterms" | "window" | "hedge" | "basis" | "chokepoint" | "freight";
+export type Diagram = "none" | "bidask" | "curve_contango" | "curve_backwardation" | "margin" | "timeline" | "spread" | "crack" | "release" | "incoterms" | "window" | "hedge" | "basis" | "chokepoint" | "freight" | "money" | "concentration" | "var" | "carry";
 
 export interface Card {
   id: string;
@@ -240,6 +240,92 @@ export const CARDS: Card[] = [
     worked: (s) => { const c = s.cargoes[0]; const v = s.voyages.find((x) => x.id === c?.voyageId); if (!c || !v) return "No ship under way."; const perDay = v.hireUsdPerDay / c.bbl; const carryPerDay = s.factors.spread1.BRENT / 30.4; return `Hire ${usd(v.hireUsdPerDay)} a day = ${perDay.toFixed(3)} $/bbl a day; the curve pays ${carryPerDay.toFixed(3)} $/bbl a day of contango: ${carryPerDay > perDay ? "storage on water pays" : "waiting loses money"}.`; },
     showMe: { screen: "desk", target: "cargoes", label: "the anchor control on the cargo card" },
     terms: [{ term: "floating storage", definition: "Holding oil on a chartered ship at anchor to sell into a later window." }],
+  },
+
+  // ---------------------------------------------------------------- tier 3: money, counterparties, limits
+  {
+    id: "cost_of_carry_money", title: "Cost of carry includes money", level: 10, diagram: "money",
+    sentences: ["Between paying for a cargo and being paid for it, the money comes from the line, and the line charges interest every day.", "On an $80m cargo at base plus 150 basis points, a month costs about $370,000: a third of a dollar a barrel before freight or storage.", "Every day a counterparty pays late, every day a window is deferred, is a day of interest on someone's balance sheet, usually yours."],
+    worked: (s) => `Line drawn ${usd(s.finance.lineDrawn)} at ${((s.world.baseRate + FINANCE.lineSpreadBp.value / 10000) * 100).toFixed(2)}%: ${usd((s.finance.lineDrawn * (s.world.baseRate + FINANCE.lineSpreadBp.value / 10000)) / 365)} a day. Interest paid this level ${usd(s.finance.interestAccrued)}; finance leg ${usd(s.pnl.attribution.filter((r) => r.leg === "finance").reduce((a, r) => a + r.amount, 0))}.`,
+    showMe: { screen: "finance", target: "margin", label: "the credit line" },
+    terms: [{ term: "working capital", definition: "The money tied up between paying for oil and being paid for it." }, { term: "financing cost", definition: "Interest on the line for the days the money is out." }],
+  },
+  {
+    id: "lc_promise_fee", title: "A letter of credit is a promise and a fee", level: 10, diagram: "money",
+    sentences: ["A producer who does not know you wants the bank's promise, not yours: a letter of credit pays them when the documents say the oil was loaded.", "It costs a fee on the face value every quarter, and the face comes off the line until the invoice is paid, so an open LC is credit you cannot use for anything else.", "Three cargoes with letters of credit can be a bigger line than you have; the third one is the one you decline, with a reason."],
+    worked: (s) => `Open letters of credit hold ${usd(lcCommitted(s))} of the line; ${usd(lineAvailable(s))} is left to draw or commit. Fee ${(FINANCE.lcFeePerQuarter.value * 100).toFixed(2)}% of face per quarter (stylised).`,
+    showMe: { screen: "finance", target: "lcs", label: "the letters of credit" },
+    terms: [{ term: "letter of credit", definition: "A bank's undertaking to pay a seller against shipping documents." }, { term: "face", definition: "The amount a letter of credit is written for." }],
+  },
+  {
+    id: "prepayment_is_a_loan", title: "Prepayment is a loan", level: 10, diagram: "money",
+    sentences: ["A producer short of cash will sell cheaper to be paid before the oil prices; the discount is interest you are charging them.", "The money comes off your line the day you pay it, and if they fail to load you are an unsecured creditor of a company that was short of cash.", "Compare the discount to what the line costs you for those days, and to what you think of the name."],
+    worked: (s) => { const c = s.cargoes.find((x) => x.prepaidUsd > 0); return c ? `${GRADES[c.grade].name} ${c.id}: prepaid ${usd(c.prepaidUsd)}; the discount of ${CREDIT.prepayDiscountPerBbl.value.toFixed(2)} $/bbl is ${usd(CREDIT.prepayDiscountPerBbl.value * c.bbl)} against interest of about ${usd((c.prepaidUsd * (s.world.baseRate + 0.015) * 30) / 365)} a month.` : `A ${CREDIT.prepayDiscountPerBbl.value.toFixed(2)} $/bbl discount on a million barrels is ${usd(CREDIT.prepayDiscountPerBbl.value * 1e6)}; a month of interest on $80m at ${((s.world.baseRate + 0.015) * 100).toFixed(2)}% is ${usd((80e6 * (s.world.baseRate + 0.015)) / 12)}.`; },
+    showMe: { screen: "desk", target: "tenders", label: "the prepay option on an offer" },
+    terms: [{ term: "prepayment", definition: "Paying for a cargo before it prices, for a discount." }],
+  },
+  {
+    id: "cheapest_for_a_reason", title: "Cheapest for a reason", level: 11, diagram: "concentration",
+    sentences: ["The cheapest offer on the screen comes from the name that needs the trade most, and a name that needs it most is the one most likely not to be there at the laycan.", "A default costs you the edge, the onward sale you cannot deliver, and any money you paid in advance.", "Price the name, not just the barrel: rating, history, and what the cheapness is paying you for."],
+    worked: (s) => { const cps = Object.values(s.counterparties).filter((c) => c.defaulted || c.gone); return cps.length ? `${cps.map((c) => `${COUNTERPARTIES[c.id].name} (${c.rating})`).join(", ")} ${cps.length > 1 ? "have" : "has"} defaulted or gone this level. Credit leg ${usd(s.pnl.attribution.filter((r) => r.leg === "credit").reduce((a, r) => a + r.amount, 0))}.` : `Ratings on the Desk: ${Object.values(s.counterparties).filter((c) => COUNTERPARTIES[c.id].type === "trader").map((c) => `${COUNTERPARTIES[c.id].name} ${c.rating}`).join(", ")}.`; },
+    showMe: { screen: "desk", target: "counterparties", label: "the counterparty table" },
+    terms: [{ term: "default", definition: "A counterparty failing to perform: not loading, not paying." }, { term: "rating", definition: "A letter grade for how likely a name is to perform." }],
+  },
+  {
+    id: "concentration", title: "Concentration", level: 11, diagram: "concentration",
+    sentences: ["Exposure to a counterparty is everything they owe you and everything you have paid for and not received: receivables, prepayments, undelivered cargoes.", "The limit is a multiple of capital per name, so that one default is a bad quarter, not the end of the book.", "Diversify across names before you add to the one that is cheapest."],
+    worked: (s) => { const cx = counterpartyExposure(s); const w = Object.entries(cx.byId).sort((a, b) => b[1] - a[1])[0]; return w ? `Largest name: ${COUNTERPARTIES[w[0]]?.name ?? w[0]} at ${usd(w[1])}, ${(w[1] / s.capital).toFixed(1)}x capital; the limit is ${s.risk.limits.concentration < 50 ? s.risk.limits.concentration.toFixed(1) + "x" : "off"}.` : "No counterparty exposure yet."; },
+    showMe: { screen: "book", target: "limits", label: "the concentration row" },
+    terms: [{ term: "concentration", definition: "One counterparty's share of what you are exposed to." }],
+  },
+  {
+    id: "due_diligence", title: "Due diligence is a position", level: 11, diagram: "concentration",
+    sentences: ["Insurance against non-performance costs a premium and pays most of the loss; buying it is a view that the name might fail.", "Contesting a claim costs the inspector's re-test and the receiver's costs if you lose, and the name remembers the fight next time it quotes you.", "Checking a counterparty is not free and not optional; treat the cost as part of the trade, like freight."],
+    worked: (s) => { const ins = s.cargoes.filter((c) => c.insured).length; const disputes = Object.values(s.counterparties).reduce((a, c) => a + c.disputes, 0); return `${ins} cargo${ins === 1 ? "" : "es"} insured at ${(CREDIT.insurancePremiumShare.value * 100).toFixed(1)}% of value; ${disputes} dispute${disputes === 1 ? "" : "s"} remembered (each one costs you ${CREDIT.disputeEdgePenalty.value.toFixed(2)} $/bbl on that name's next quote).`; },
+    showMe: { screen: "desk", target: "cargoes", label: "the insure button on a cargo" },
+    terms: [{ term: "non-performance insurance", definition: "Cover that pays most of the loss when a counterparty fails to perform." }],
+  },
+  {
+    id: "var_is_a_quantile", title: "VaR is a quantile, not a maximum", level: 12, diagram: "var",
+    sentences: ["A one-day 95% VaR of $2m says one day in twenty loses more than $2m; it says nothing about how much more.", "The stress table does: it re-prices the whole book under a 10% move and a vol shock, and that is the number the risk manager quotes when he warns you.", "When vol doubles, yesterday's VaR is wrong by this morning; the history catches up slowly, the stress table does not need to."],
+    worked: (s) => { const w = s.risk.stress.length ? s.risk.stress.reduce((a, r) => (r.pnlChange < a.pnlChange ? r : a), s.risk.stress[0]) : null; return `VaR ${usd(s.risk.var95?.v ?? 0)} against a limit of ${usd(s.risk.limits.var95)}.${w ? ` Worst stress row: ${Math.round(w.priceShock * 100)}% price, ${usd(w.pnlChange)}.` : ""}`; },
+    showMe: { screen: "book", target: "var", label: "the stress table" },
+    terms: [{ term: "stress test", definition: "Full re-pricing of the book under a stated shock." }],
+  },
+  {
+    id: "gross_vs_net", title: "Gross versus net", level: 12, diagram: "var",
+    sentences: ["Net is long minus short; gross is long plus short. A hedged cargo is net flat and gross twice the cargo.", "Gross is what goes wrong when the hedge and the thing it hedges stop moving together: basis, timing, a liquidity gap.", "The risk manager limits both because a flat book can still be enormous."],
+    worked: (s) => `Net Brent ${s.risk.netLots.BRENT} lots, gross ${s.risk.grossLots} lots against a gross limit of ${s.risk.limits.grossLots}; physical ${Math.round(physicalExposureBbl(s).bbl).toLocaleString()} bbl.`,
+    showMe: { screen: "book", target: "limits", label: "the gross and net rows" },
+    terms: [{ term: "gross exposure", definition: "Long plus short, counting both sides." }],
+  },
+  {
+    id: "reduce_before_told", title: "Reduce before you are told", level: 12, diagram: "var",
+    sentences: ["A breach at the close is a warning; a second close is a forced cut at the touch; a third is a life. The cheapest exit is the one you choose.", "When the news says vol doubled, the VaR will double at the next close whether or not you look; cut the gross now at your price, not his.", "A request to raise a limit is granted on a clean record and refused on a dirty one; the time to ask is before you need it."],
+    worked: (s) => `Closes inside the limit: ${s.risk.closesInsideLimit} of ${s.risk.closesTotal}; forced reductions ${s.risk.forcedReductions}; lives ${s.risk.lives}.${s.risk.breaches.some((b) => b.consecutive > 0) ? " You are in breach now." : ""}`,
+    showMe: { screen: "book", target: "limits", label: "the limits table" },
+    terms: [{ term: "forced reduction", definition: "The risk manager cutting the book pro rata at the touch." }],
+  },
+  {
+    id: "cash_and_carry", title: "Cash and carry", level: 13, diagram: "carry",
+    sentences: ["Buy the prompt barrel, store it, sell the deferred month: the contango is your revenue, storage and money are your costs, and the difference is locked the day you do both.", "Sell the deferred futures or the deferred physical; either way the flat price is gone and what is left is structure against carry.", "When the curve flips to backwardation the prompt barrel is worth more than the deferred one: sell the oil, buy back the paper, and be out before the storage bill."],
+    worked: (s) => { const front = s.listed.WTI[0], second = s.listed.WTI[2]; const q1 = s.quotes[ckey("WTI", front)], q2 = s.quotes[ckey("WTI", second)]; return q1 && q2 ? `WTI ${second} minus ${front} is ${(q2.mid - q1.mid).toFixed(2)} $/bbl; two months at Cushing cost ${(2 * 0.35).toFixed(2)} of storage and about ${((q1.mid * (s.world.baseRate + 0.015) * 2) / 12).toFixed(2)} of money: carry ${(q2.mid - q1.mid - 0.7 - (q1.mid * (s.world.baseRate + 0.015) * 2) / 12).toFixed(2)} $/bbl.` : "Not yet."; },
+    showMe: { screen: "markets", target: "curve", label: "the WTI curve" },
+    terms: [{ term: "carry trade", definition: "Owning stored oil against a deferred sale to earn the contango." }],
+  },
+  {
+    id: "storage_economics", title: "Storage economics", level: 13, diagram: "carry",
+    sentences: ["A tank lease is a monthly cost per barrel of capacity whether or not it is full, with a minimum term you pay out if you leave early.", "The tank pays for itself when the spread between the month you fill and the month you empty beats the lease plus the interest on the oil.", "Rotterdam leases price in euros: the tank has an FX leg before it has a barrel in it."],
+    worked: (s) => { const t = s.tanks.filter((k) => !k.released); return t.length ? t.map((k) => `Tank ${k.id} at ${PORTS[k.port].name}: ${tankInventory(k).toLocaleString()} of ${k.capacityBbl.toLocaleString()} bbl, ${k.costPerBblMonth.toFixed(2)} ${k.currency}/bbl/month, ${k.chargesPaid} of ${k.months} months paid${k.parcels.length ? `, parcels ${k.parcels.map((p) => `${p.label} at ${parcelDiff(s, p).toFixed(2)}`).join("; ")}` : ""}.`).join(" ") : "No tank leased. Cushing $0.35, Rotterdam 0.55 EUR, Fujairah $0.55, Singapore $0.70 a barrel a month (stylised)."; },
+    showMe: { screen: "desk", target: "tanks", label: "the tanks" },
+    terms: [{ term: "tank lease", definition: "Capacity rented by the month per barrel, with a minimum term." }],
+  },
+  {
+    id: "blending_to_spec", title: "Blending to a spec", level: 13, diagram: "carry",
+    sentences: ["Two parcels in one tank become one parcel at the volume-weighted API and sulphur, and the blend prices on the quality grid, not on either grade's name.", "Sweet into sour lifts the sour barrel more than it costs the sweet one when the grid pays more per point of sulphur than the sweet premium you gave up.", "A blend is a cheaper barrel only if someone buys that quality; check the spec you are selling into before you mix."],
+    worked: (s) => { const b = s.tanks.flatMap((k) => k.parcels).find((p) => p.grade === "BLEND"); return b ? `${b.label}: ${b.bbl.toLocaleString()} bbl priced at ${parcelDiff(s, b).toFixed(2)} over ${b.benchmark} on the grid.` : "No blend yet. The grid: 0.12 $/bbl per API degree around 38, 2.00 $/bbl per sulphur point around 0.5% (stylised)."; },
+    showMe: { screen: "desk", target: "tanks", label: "the blend button" },
+    terms: [{ term: "blend", definition: "Parcels mixed to a target quality." }, { term: "quality grid", definition: "The price of API and sulphur around a reference barrel." }],
   },
   {
     id: "turnaround_is_supply", title: "A turnaround is a supply event", level: 14, diagram: "crack",

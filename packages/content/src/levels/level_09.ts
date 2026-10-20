@@ -22,7 +22,7 @@ export const level09: LevelSpec = {
   days: 45, startDate: "2027-03-01", capital: 20e6, creditLine: 150e6, lives: 3,
   instruments: ["BRENT"], unlocks: TIER2_UNLOCKS,
   regime: "normal", world: { oecdInvGap: 18, crudeBalance: 100, geo: 0.3 }, factors: { brentRef: refFor(74, 18, 0.3) },
-  limits: { var95: 5e6, netLots: TIER2_LIMITS(2500), grossLots: 5000, stopLoss: 6e6, drawdown: 7e6, concentration: 1 },
+  limits: { var95: 5e6, netLots: TIER2_LIMITS(2500), grossLots: 5000, stopLoss: 6e6, drawdown: 7e6, concentration: 50 },
   events: [
     { id: "offer", kind: "tender", day: 0, hour: 9, params: { counterparty: "GULF_NATIONAL", side: "offer", grade: "ARAB_LIGHT", bbl: 1000000, incoterm: "FOB", port: "RAS_TANURA", basis: "DATED", windowKind: "after_bl", windowDays: 5, laycanStart: 3, laycanDays: 2, openHours: 60, note: "Gulf National offers a Suezmax of Arab Light FOB Ras Tanura, laycan days 3-5, Dated plus the differential shown, pricing 5 days after B/L." } },
     { id: "bid", kind: "tender", day: 1, hour: 10, params: { counterparty: "RHINE_REFINING", side: "bid", grade: "ARAB_LIGHT", bbl: 1000000, incoterm: "CIF", port: "ROTTERDAM", basis: "DATED", windowKind: "after_discharge", windowDays: 5, laycanStart: 28, laycanDays: 12, openHours: 96, note: "Rhine Refining bids for an Arab Light cargo CIF Rotterdam, discharge days 28-40, Dated plus the differential shown, pricing 5 days after discharge." } },
@@ -55,7 +55,7 @@ Pass: deliver the cargo with the freight leg inside par (the cheaper passage, wi
   pass: (s) => delivered(s) && decidedWell(s) && demurrageUnderADay(s),
   passRuleText: "Cargo delivered, the cheaper passage chosen within 10%, demurrage under one day.",
   quiz,
-  par: -1588823.38, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
+  par: -1025135.86, // the bot's P&L on seeds[0], checked in; the live par is computed on the player's seed
   seeds: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
   solve: (s) => {
     if (s.level.status === "ended") return quizAnswers(s);

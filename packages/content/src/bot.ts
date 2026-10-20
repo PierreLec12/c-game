@@ -1,5 +1,5 @@
 /** Shared helpers for the solution bots and the level checks. */
-import { ckey, hourOfTick, type Action, type InstrumentId, type State } from "@desk/engine";
+import { ckey, hourOfTick, type Action, type AttributionLeg, type InstrumentId, type State } from "@desk/engine";
 import { charterQuotes, physicalExposureBbl, physicalExposureAfterPrintsBbl, legMark, type Cargo } from "@desk/engine";
 
 export const P = "p1";
@@ -44,7 +44,7 @@ export function refFor(price: number, oecdInvGap: number, geo = 0.2): number {
   return price / Math.exp(-0.004 * oecdInvGap + 0.18 * geo);
 }
 
-export function leg(s: State, name: "flat" | "basis" | "time_spread" | "crack" | "fees_slippage" | "fx" | "finance" | "freight" | "demurrage" | "quality"): number {
+export function leg(s: State, name: AttributionLeg): number {
   return s.pnl.attribution.filter((r) => r.leg === name).reduce((a, r) => a + r.amount, 0);
 }
 
@@ -111,7 +111,7 @@ export function hedgeRecord(s: State, inst: InstrumentId = "BRENT", tol = 0.1, m
 /** Net physical barrels after today's window days print at the close: what the close snapshot will show. */
 export const physicalExposureAfterPrints = (s: State): number => physicalExposureAfterPrintsBbl(s);
 /** The most lots one hedge order sends: inside the block rule and gentle on the book (stylised desk practice). */
-export const HEDGE_CHUNK: Record<string, number> = { BRENT: 250, WTI: 250, DUBAI: 300 };
+export const HEDGE_CHUNK: Record<string, number> = { BRENT: 120, WTI: 120, DUBAI: 150 };
 /** A chunked hedge order, or null when the adjustment is below five lots. */
 export function hedgeChunk(inst: InstrumentId, month: string, lots: number): Action | null {
   if (Math.abs(lots) < 5) return null;
@@ -132,3 +132,9 @@ export function anchorDaysForQueue(s: State, c: Cargo): number {
   if (until <= v.eta) return 0;
   return Math.ceil((until - v.eta) / 24);
 }
+
+export const TIER3_UNLOCKS: Action["type"][] = [...TIER2_UNLOCKS, "open_lc", "insure", "counter_tender", "lease_tank", "store_cargo", "blend", "release_tank"];
+export const TIER3_LIMITS = (brent: number, wti = 0, dubai = brent) => ({ BRENT: brent, WTI: wti, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: dubai });
+export const cashNeverNegative = (s: State): "pending" | "done" | "failed" => (s.risk.closes.some((c) => c.cashUsd < -1) || s.finance.marginCalls > 0 ? "failed" : s.risk.closes.length > 0 ? "done" : "pending");
+export const insideLimitsEveryClose = (s: State): "pending" | "done" | "failed" => (s.risk.closesTotal === 0 ? "pending" : s.risk.varBreachedAtClose || s.risk.forcedReductions > 0 || s.risk.messages.some((m) => m.severity === "warning" || m.severity === "breach") ? "failed" : "done");
+export const cargoFrom = (s: State, cp: string): Cargo | undefined => s.cargoes.find((c) => c.purchase.counterparty === cp);

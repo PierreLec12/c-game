@@ -24,7 +24,7 @@ export const level02: LevelSpec = {
   days: 56, startDate: "2027-01-04", capital: 5e6, creditLine: 20e6, lives: 3,
   instruments: ["BRENT"], unlocks: [...TIER1_UNLOCKS, "roll"],
   regime: "calm", world: { oecdInvGap: GAP_A, crudeBalance: 150, targets: { crudeBalance: 150 } }, factors: { brentRef: refFor(75, GAP_A) },
-  limits: { var95: 250000, netLots: { ...TIER1_LIMITS_NONE, BRENT: 100 }, grossLots: 200, stopLoss: 800000, drawdown: 1000000, concentration: 1 },
+  limits: { var95: 250000, netLots: { ...TIER1_LIMITS_NONE, BRENT: 100 }, grossLots: 200, stopLoss: 800000, drawdown: 1000000, concentration: 50 },
   events: [
     { id: "flip", kind: "inventory_shock", day: FLIP_DAY, hour: 9, params: { oecdInvGap: -45, usInvGap: -10, headline: "Stocks draw hard: a field outage meets a cold snap; the curve flips", body: "A 45 mb swing in the stock picture. The surplus is gone; prompt barrels are now scarce. Watch the front spread." } },
     { id: "flip_balance", kind: "balance_shift", day: FLIP_DAY, hour: 9, params: { kbd: -700, headline: "Balance turns to deficit", body: "The outage takes 700 kb/d out of the balance for the rest of the level.", pause: 0 } },
