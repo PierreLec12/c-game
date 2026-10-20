@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { cargoMark, charterQuotes, COUNTERPARTIES, formatClock, GRADES, legMark, passageOptions, PORTS, physicalExposureBbl, windowText, VESSEL_CLASSES, type Cargo, type State, type Tender, type Voyage } from "@desk/engine";
+import { cargoMark, charterQuotes, COUNTERPARTIES, formatClock, GRADES, legMark, passageOptions, PORTS, physicalExposureBbl, windowText, VESSEL_CLASSES, counterpartyExposure, STORAGE_TANKS, tankInventory, parcelDiff, isPipeline, type Cargo, type State, type Tender, type Voyage } from "@desk/engine";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
 
@@ -28,11 +28,15 @@ export function Desk() {
         <table><thead><tr><th>Ship</th><th>Class</th><th>Owner</th><th>Status</th><th>Where</th></tr></thead>
           <tbody>{state.vessels.filter((v) => v.cls !== "LNGC").map((v) => <tr key={v.id}><td>{v.name}</td><td>{VESSEL_CLASSES[v.cls].name}</td><td className="small">{COUNTERPARTIES[v.owner].name}</td><td>{v.status}</td><td className="small muted">{v.atPort ? PORTS[v.atPort].name : `${v.lat.toFixed(1)}, ${v.lon.toFixed(1)}`}</td></tr>)}</tbody></table>
       </div>
-      <div className="panel">
+      <div className="panel" id="tanks">
         <h2>Tanks</h2>
-        <div className="notyet">not yet: tank leases, fills and draws unlock at level 13 (milestone 3). Floating storage: hold a ship at anchor from its cargo card.</div>
+        {state.level.unlockedActions.includes("lease_tank") ? <Tanks state={state} /> : <div className="notyet">not yet: tank leases, fills and draws unlock at level 13. Floating storage: hold a ship at anchor from its cargo card.</div>}
         <h2 style={{ marginTop: 12 }}>Refinery and LNG</h2>
         <div className="notyet">not yet: level 14 and level 15 (milestone 4).</div>
+      </div>
+      <div className="panel" id="counterparties" style={{ gridColumn: "1 / -1" }}>
+        <h2>Counterparties <span className="muted">(ratings, memory, exposure)</span></h2>
+        <Counterparties state={state} />
       </div>
     </div>
   );
@@ -41,13 +45,17 @@ export function Desk() {
 function TenderRow({ t, state }: { t: Tender; state: State }) {
   const submit = useGame((g) => g.submit);
   const [cargoId, setCargoId] = useState<string>(state.cargoes.find((c) => !c.sale && c.grade === t.grade)?.id ?? "");
+  const [counter, setCounter] = useState<string>(String(Math.round((t.diff + (t.side === "offer" ? -0.1 : 0.1)) * 100) / 100));
+  const [reason, setReason] = useState("");
   const cp = COUNTERPARTIES[t.counterparty];
+  const cs = state.counterparties[t.counterparty];
   const hoursLeft = t.expiresTick - state.tick;
   return (
     <div style={{ padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
       <div className="flex">
         <strong>{t.side === "offer" ? "Offer" : "Bid"} {t.id}</strong>
-        <span>{cp.name}<span className="badge">{cp.rating}</span></span>
+        <span>{cp.name}<span className={`badge ${cs && (cs.defaulted || cs.gone) ? "bad" : ""}`}>{cs?.rating ?? cp.rating}</span></span>
+        {t.requiresLc && <span className="badge warn">LC required</span>}
         <span className="badge warn">closes in {hoursLeft}h</span>
       </div>
       <div className="small" style={{ margin: "4px 0" }}>{t.note}</div>
@@ -55,9 +63,13 @@ function TenderRow({ t, state }: { t: Tender; state: State }) {
         {GRADES[t.grade].name} · {t.bbl.toLocaleString()} bbl · {t.incoterm} {PORTS[t.port].name} · {t.basis} <Fig v={t.diff} fmt="signed" what="Contract differential" why={`Over ${t.basis}. The market's fair differential on these terms is ${t.fairDiff >= 0 ? "+" : ""}${t.fairDiff.toFixed(2)} (grade grid${t.incoterm !== "FOB" ? " plus freight and insurance" : ""}); ${cp.name}'s profile: ${cp.profile}.`} /> · {windowText(t.window)} · {t.side === "offer" ? "laycan" : "discharge"} days {t.laycan[0]}-{t.laycan[1]}
       </div>
       <div className="flex" style={{ marginTop: 6 }}>
-        {t.side === "bid" && <select aria-label="cargo to sell" value={cargoId} onChange={(e) => setCargoId(e.target.value)}><option value="">pick a cargo</option>{state.cargoes.filter((c) => !c.sale).map((c) => <option key={c.id} value={c.id}>{c.id} {GRADES[c.grade].name} {c.bbl.toLocaleString()} bbl</option>)}</select>}
+        {t.side === "bid" && <select aria-label="cargo to sell" value={cargoId} onChange={(e) => setCargoId(e.target.value)}><option value="">pick a cargo</option>{state.cargoes.filter((c) => !c.sale && c.status !== "cancelled").map((c) => <option key={c.id} value={c.id}>{c.id} {GRADES[c.grade].name} {c.bbl.toLocaleString()} bbl{c.tankId ? ` (in ${c.tankId})` : ""}</option>)}</select>}
         <button className="primary" onClick={() => submit({ type: "accept_tender", player: "p1", tenderId: t.id, cargoId: t.side === "bid" ? cargoId : undefined })} disabled={state.level.status !== "running" || (t.side === "bid" && !cargoId)}>Accept</button>
-        <button onClick={() => submit({ type: "decline_tender", player: "p1", tenderId: t.id })}>Decline</button>
+        {t.side === "offer" && t.prepayDiscount > 0 && <button className="primary" onClick={() => submit({ type: "accept_tender", player: "p1", tenderId: t.id, prepay: true })} disabled={state.level.status !== "running"}>Accept and prepay ({t.prepayDiscount.toFixed(2)} off)</button>}
+        {state.level.unlockedActions.includes("counter_tender") && !t.countered && <><input aria-label="counter differential" type="number" step={0.05} value={counter} onChange={(e) => setCounter(e.target.value)} style={{ width: 90 }} /><button onClick={() => submit({ type: "counter_tender", player: "p1", tenderId: t.id, diff: parseFloat(counter) })} disabled={!Number.isFinite(parseFloat(counter))}>Counter</button></>}
+        {t.countered && <span className={`badge ${t.countered.answer === "accepted" ? "ok" : "bad"}`}>counter {t.countered.diff >= 0 ? "+" : ""}{t.countered.diff.toFixed(2)} {t.countered.answer}</span>}
+        <input aria-label="reason for declining" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="reason (optional)" style={{ width: 200 }} />
+        <button onClick={() => submit({ type: "decline_tender", player: "p1", tenderId: t.id, reason: reason || undefined })}>Decline</button>
       </div>
     </div>
   );
@@ -113,6 +125,18 @@ function CargoCard({ c, state }: { c: Cargo; state: State }) {
         {c.warRiskUsd > 0 && <> · war risk and detour <Fig v={c.warRiskUsd} fmt="usd" what="War risk and detour hire" why="Charged when transiting a restricted passage or going round it." /></>}
       </div>
       {vessel && v && <div className="small muted">{vessel.name} ({VESSEL_CLASSES[vessel.cls].name}, {COUNTERPARTIES[vessel.owner].name}) · {v.status.replace("_", " ")} · ETA {formatClock(state.startDay, v.eta)}{v.detour ? ` · ${v.detour}` : ""} · <Link to="/map" onClick={() => select("BRENT", state.listed.BRENT[0])}>show on the map</Link></div>}
+      {running && c.status !== "cancelled" && (
+        <div className="flex small" style={{ marginTop: 6 }}>
+          {state.level.unlockedActions.includes("open_lc") && !c.lcId && (c.status === "contracted" || c.status === "fixed") && <button className={c.requiresLc ? "primary" : ""} onClick={() => submit({ type: "open_lc", player: "p1", cargoId: c.id })}>{c.requiresLc ? "Open the letter of credit (required)" : "Open a letter of credit"}</button>}
+          {c.lcId && <span className="badge ok">{c.lcId}</span>}
+          {state.level.unlockedActions.includes("insure") && !c.insured && c.status !== "delivered" && <button onClick={() => submit({ type: "insure", player: "p1", cargoId: c.id })}>Insure against non-performance</button>}
+          {c.insured && <span className="badge ok">insured</span>}
+          {c.prepaidUsd > 0 && <span className="badge">prepaid {usd(c.prepaidUsd)}</span>}
+          {state.level.unlockedActions.includes("store_cargo") && c.status === "delivered" && !c.tankId && !c.sale && state.tanks.filter((t) => !t.released && t.port === (isPipeline(c) ? c.loadPort : c.dischargePort)).map((t) => <button key={t.id} onClick={() => submit({ type: "store_cargo", player: "p1", cargoId: c.id, tankId: t.id })}>Store in {t.id} at {PORTS[t.port].name}</button>)}
+          {c.tankId && <span className="badge">in tank {c.tankId}</span>}
+        </div>
+      )}
+      {c.cancelled && <div className="small" style={{ color: "var(--risk)" }}>Cancelled: {c.cancelled.reason}.</div>}
       {c.claims.map((k) => <div key={k.id} className="small" style={{ color: "var(--risk)" }}>Claim {k.id} ({k.status}): {k.text} {usd(k.amountUsd)}{k.status === "open" && <> <button onClick={() => submit({ type: "settle_claim", player: "p1", cargoId: c.id, claimId: k.id })}>Settle</button> <button onClick={() => submit({ type: "contest_claim", player: "p1", cargoId: c.id, claimId: k.id })}>Contest</button></>}</div>)}
       {!c.vesselId && running && (
         <div style={{ marginTop: 6 }}>
@@ -144,3 +168,41 @@ function CargoCard({ c, state }: { c: Cargo; state: State }) {
 }
 
 export const voyageLabel = (v: Voyage) => v.status.replace("_", " ");
+
+function Tanks({ state }: { state: State }) {
+  const submit = useGame((g) => g.submit);
+  const [port, setPort] = useState("CUSHING");
+  const [bbl, setBbl] = useState(500000);
+  const [months, setMonths] = useState(2);
+  const [chosen, setChosen] = useState<Record<string, boolean>>({});
+  const running = state.level.status === "running";
+  return (
+    <div>
+      {state.tanks.filter((t) => !t.released).length === 0 ? <div className="muted small">No tank leased.</div> : state.tanks.filter((t) => !t.released).map((t) => (
+        <div key={t.id} className="small" style={{ padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
+          <strong>{t.id} at {PORTS[t.port].name}</strong> · <Fig v={tankInventory(t)} fmt="int" what="Barrels in the tank" why="The sum of its parcels." /> of {t.capacityBbl.toLocaleString()} bbl · <Fig v={t.costPerBblMonth} fmt="px" what="Lease cost per barrel per month" why={`${t.currency}, charged monthly on the whole capacity; ${t.chargesPaid} of ${t.months} months of the minimum term paid.`} stylised /> {t.currency}/bbl/month · next charge {formatClock(state.startDay, t.nextChargeTick).slice(4)}
+          {t.parcels.map((p) => <div key={p.id} style={{ marginLeft: 10 }}><label><input type="checkbox" checked={!!chosen[p.id]} onChange={(e) => setChosen({ ...chosen, [p.id]: e.target.checked })} aria-label={`select parcel ${p.id}`} /> {p.id} {p.label}: {p.bbl.toLocaleString()} bbl, {p.api.toFixed(1)} API, {p.sulphur.toFixed(2)}% S, marked at {p.benchmark} <Fig v={parcelDiff(state, p)} fmt="signed" what="Differential over the benchmark" why={p.grade === "BLEND" ? "On the quality grid: 0.12 $/bbl per API degree around 38 and 2.00 $/bbl per sulphur point around 0.5%, less a blend discount (stylised)." : "The grade's market differential."} /></label></div>)}
+          {running && <div className="flex" style={{ marginTop: 4 }}>
+            <button onClick={() => submit({ type: "blend", player: "p1", tankId: t.id, parcelIds: t.parcels.filter((p) => chosen[p.id]).map((p) => p.id) })} disabled={t.parcels.filter((p) => chosen[p.id]).length < 2}>Blend the selected parcels</button>
+            <button onClick={() => submit({ type: "release_tank", player: "p1", tankId: t.id })}>Release the tank</button>
+          </div>}
+        </div>
+      ))}
+      {running && <div className="flex small" style={{ marginTop: 8 }}>
+        <select aria-label="port to lease at" value={port} onChange={(e) => setPort(e.target.value)}>{Object.values(STORAGE_TANKS).map((t) => <option key={t.port} value={t.port}>{PORTS[t.port].name}: {t.costPerBblMonth.value.toFixed(2)} {t.currency}/bbl/month, min {t.minMonths.value} mo</option>)}</select>
+        <input aria-label="barrels to lease" type="number" step={50000} value={bbl} onChange={(e) => setBbl(Number(e.target.value))} style={{ width: 110 }} />
+        <input aria-label="months" type="number" min={1} max={12} value={months} onChange={(e) => setMonths(Number(e.target.value))} style={{ width: 60 }} />
+        <button className="primary" onClick={() => submit({ type: "lease_tank", player: "p1", port, bbl, months })}>Lease</button>
+      </div>}
+    </div>
+  );
+}
+
+function Counterparties({ state }: { state: State }) {
+  const cx = counterpartyExposure(state);
+  const rows = Object.values(state.counterparties).filter((c) => COUNTERPARTIES[c.id].type !== "bank");
+  return (
+    <table><thead><tr><th>Name</th><th>Type</th><th>Rating</th><th>Profile and memory</th><th className="num">Exposure</th><th className="num">x capital</th></tr></thead>
+      <tbody>{rows.map((c) => { const cp = COUNTERPARTIES[c.id]; const e = cx.byId[c.id] ?? 0; return <tr key={c.id} className={c.defaulted || c.gone ? "muted" : ""}><td>{cp.name}{c.defaulted ? <span className="badge bad">defaulted</span> : c.gone ? <span className="badge bad">gone</span> : null}</td><td className="small">{cp.type}</td><td><Fig v={c.ratingScore} fmt="int" what={`Rating ${c.rating}`} why={`Score ${c.ratingScore.toFixed(0)} of 100: ${c.rating}. Ratings move with events; late payments and defaults cut them.`} /> <span className={`badge ${c.ratingScore < 50 ? "bad" : c.ratingScore < 70 ? "warn" : "ok"}`}>{c.rating}</span></td><td className="small muted">{c.note}{c.late ? ` · paid late ${c.late}x` : ""}</td><td className="num"><Fig v={e} fmt="usd" what="Exposure to this name" why="Undelivered cargoes bought from them (and prepayments), plus unpaid sales to them." /></td><td className="num">{e > 0 ? <Fig v={e / state.capital} fmt="px" decimals={1} what="Exposure as a multiple of capital" why={`Against a concentration limit of ${state.risk.limits.concentration < 50 ? state.risk.limits.concentration.toFixed(1) + "x capital" : "none in this level"}.`} /> : <span className="muted">-</span>}</td></tr>; })}</tbody></table>
+  );
+}

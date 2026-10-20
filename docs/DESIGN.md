@@ -1,7 +1,8 @@
 # DESK: design as built
 
-Milestone 1 (the paper desk) written 2026-10-19; milestone 2 (the cargo and the ship) added 2026-10-20. This file records what
-was actually built and every deviation from `BUILD_PROMPT.md`. It is updated at the end of every milestone.
+Milestone 1 (the paper desk) written 2026-10-19; milestone 2 (the cargo and the ship) and milestone 3 (money and limits) added
+2026-10-20. This file records what was actually built and every deviation from `BUILD_PROMPT.md`. It is updated at the end of every
+milestone.
 
 ## Stack (section 3.1 of the prompt; default kept)
 
@@ -308,3 +309,72 @@ and a passage decision could be re-issued every hour while the ship waited, char
 * **Tier 1 pars were re-recorded** (level 1 $102,619; level 2 $76,540; level 3 $60,056; level 4 $106,880): the Dubai swap's
   structure draws from the price stream, so every tier 1 world differs slightly from milestone 1. The bots still pass their
   ten seeds. A save from milestone 1 would not replay to the same state; there were no saves to keep.
+
+---
+
+# Milestone 3: money and limits (2026-10-20)
+
+## Finance in full
+
+* **Letters of credit.** A seller may require one (the tender says so). Opening one costs 0.25% of face per quarter (section 14)
+  and holds the face off the line until the purchase invoice is paid, so `lineAvailable = limit - drawn - open LC faces`. A cargo
+  that needed an LC and has none at the laycan is cancelled, the charter with it (the owner keeps 15% of the lump sum, stylised),
+  and an onward sale owes its receiver.
+* **Prepayment.** A tender may offer a discount on the differential for paying before pricing; the payment is the cargo's forward
+  value today, drawn on the line, netted off the invoice. In a default the prepayment is lost (credit leg).
+* **Covenant.** A drawdown beyond 40% of capital cuts the line to what is drawn and committed; no new draws. Checked at every close.
+* **Insurance.** Non-performance cover on a cargo costs 0.6% of its value and recovers 90% of the loss on a default (stylised).
+* **The desk draws the line for payments it cannot fund from cash** (`autoDrawn`, repaid when cash returns), which is where the
+  finance leg's interest comes from on every financed cargo; the player's own draws stay until repaid.
+
+## Counterparties in full
+
+A `CounterpartyState` per name: rating and score, an edge adjustment (memory), disputes, late payments, defaulted, gone. The
+small refiner pays twelve days late, once per invoice, with a headline; the aggressive trader defaults (every undelivered cargo
+bought from it is cancelled, onward sales claim, insurance recovers); the mid-sized trader disappears (quotes withdrawn, cargoes
+cancelled without a claim). Ratings move with events and with defaults. A contested claim is remembered: the name quotes 15 cents
+worse from then on. A counter on a tender is answered by `decideCounter`: reliable names move a dime, aggressive ones thirty cents,
+less what they remember. **Exposure** to a name is undelivered cargoes bought from it plus prepayments, plus unpaid or unpriced
+sales to it; **concentration** is the largest such exposure as a multiple of capital (a limit of 50 or more is off).
+
+**Deviation.** The prompt's "concentration limit per counterparty" is implemented as a multiple of capital, not a share of total
+exposure: with one cargo on the book a share limit is 100% by construction. A concentration breach cannot be cut at the touch, so it
+escalates on its own schedule: a warning every close and a life after five, instead of warning, forced cut, life.
+
+## Storage and blending
+
+Tanks at Cushing, Rotterdam (in EUR), Fujairah, Singapore and Saldanha Bay (section 14 costs; Rotterdam's $0.60 became 0.55 EUR).
+A lease is capacity by the month with a minimum term paid out on early release; charges land in the storage leg on the anniversary.
+A delivered cargo at the tank's port goes in as a parcel marked at the local benchmark prompt plus the grade's differential; the
+parcel is long physical exposure. Selling a stored cargo forward draws the parcel at once (the barrels are committed; the sale leg
+carries them) and the tank stays leased until that sale is paid. A pipeline hub (Cushing) has no sea node: a batch there is
+"delivered" on the laycan's first day with no ship. Two parcels blend to one at the volume-weighted API and sulphur, priced on
+the quality grid (0.12 $/bbl per API degree around 38, 2.00 per sulphur point around 0.5%, less a blend discount, stylised); a
+blended parcel is marked but cannot be tendered yet (that arrives with the refinery), and a parcel sold forward cannot be blended.
+
+**Super-contango.** By construction contango sits under full carry, which makes cash-and-carry unprofitable for a player whose
+line costs more than the model's base rate. Above a 40 mb surplus (tank tops) the cap rises to 1.3 times carry (stylised), so
+level 13's carry pays about a third of a dollar a barrel.
+
+## Information in tier 3
+
+A tier knob `infoDelayHours` (12 in tier 3): for the delayable kinds (outages, seizures, chokepoints, strikes, congestion,
+differential and freight shocks, balance and inventory shocks, scares, turnarounds, defaults, disappearances) the world moves at
+the event tick and the headline arrives later, marked with when the market moved. Releases, meetings and leaks, tenders, headline
+moves and claims are not delayed. **Rumours**: a scheduled rumour decides its truth at scheduling (p = 0.5 by default), moves the
+market a little, and is resolved on screen: a true one is confirmed by the real event at the resolution tick, a false one is denied
+and the move unwinds.
+
+## Fair differentials
+
+A delivered bid's fair differential prices freight on the smallest class that carries the cargo at the market's hire (a
+Suezmax for a million barrels), not on the grade's default class spread over a full VLCC: the bot's level 12 edge was being eaten
+by that mismatch. Tier 2 pars moved a little and were re-recorded.
+
+## Levels 10 to 13
+
+See `docs/LEVELS.md`. Level 12's bot passes 75% of random seeds: the P&L target is reachable but the Dated-to-futures basis
+moves between the purchase and sale windows and futures cannot hedge it; ten passing seeds are checked in. Deviations: level 12's curve is flat so the cargo's edge is not eaten by the window mismatch, which is level
+8's lesson; level 13's "carry closed before the flip" is read as "unwound once the curve flips", which is when a carry must be
+unwound; level 10's "finance leg inside par" is a stated band ($2.5m) because the bot's leg on the player's seed is not available
+to a live objective. Tier 3 capital and line are the prompt's $50m and $400m.

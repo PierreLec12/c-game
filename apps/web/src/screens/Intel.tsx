@@ -14,7 +14,7 @@ export function Intel() {
         {news.length === 0 ? <div className="muted">Quiet.</div> : news.map((n) => (
           <div key={n.id} style={{ padding: "6px 0", borderBottom: "1px solid var(--line)" }}>
             <div className="flex"><strong>{n.headline}</strong><span className={`badge ${n.source === "leak" || n.source === "rumour" ? "warn" : ""}`}>{n.source}</span>{n.resolved && <span className={`badge ${n.resolved.outcome === "true" ? "ok" : "bad"}`}>resolved {n.resolved.outcome}</span>}</div>
-            <div className="small muted">{formatClock(state.startDay, n.tick)} · {n.body}</div>
+            <div className="small muted">{formatClock(state.startDay, n.tick)}{n.shockTick !== undefined && <span className="badge warn">the market moved at {formatClock(state.startDay, n.shockTick).slice(4)}</span>} · {n.body}</div>
             {n.resolved && <div className="small">{n.resolved.text} <span className="muted">Base rate for a {n.source}: <Fig v={n.reliability} fmt="pct" what="Reliability of this source type" why="The share of items from this source type that turn out true, shown after resolution so the base rate is learned, not guessed." /></span></div>}
           </div>
         ))}

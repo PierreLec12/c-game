@@ -1,6 +1,6 @@
-# The curriculum as shipped (milestones 1 and 2: levels 0 to 9)
+# The curriculum as shipped (milestones 1 to 3: levels 0 to 13)
 
-Tiers 0, 1 and 2 of twenty-one levels. Each level is a module in `packages/content/src/levels/level_NN.ts` with the
+Tiers 0 to 3 of twenty-one levels. Each level is a module in `packages/content/src/levels/level_NN.ts` with the
 briefing, the scenario, the objectives, the cards, the quiz, the solution bot, ten seeds and the checked-in par.
 
 | Level | Title | Days | Instruments | Pass rule | Cards |
@@ -67,11 +67,11 @@ a differential shock, a quality claim, a restricted Red Sea), three lives.
 |---|---|---|---|
 | 5 | -$2,357,058 (unhedged: the cargo's luck on that seed) | 100% | 1 to 10 |
 | 6 | -$242,889 | 100% | 1 to 10 |
-| 7 | -$869,849 | 100% | 1 to 10 |
-| 8 | -$1,679,489 (the mismatch's bill, locked by the spread) | 100% | 1 to 10 |
-| 9 | -$1,588,823 (war risk, convoy hire, a wide spread crossed) | 100% | 1 to 10 |
+| 7 | -$897,451 | 100% | 1 to 10 |
+| 8 | -$1,088,469 (the mismatch's bill, locked by the spread) | 100% | 1 to 10 |
+| 9 | -$1,025,136 (war risk, convoy hire, a wide spread crossed) | 100% | 1 to 10 |
 
-Tier 2 pars are negative: the levels are about delivering and hedging correctly, not about the margin on one cargo, and the
+Tier 2 pars were re-recorded in milestone 3 when the fair differential started pricing freight on the cargo's own size. Tier 2 pars are negative: the levels are about delivering and hedging correctly, not about the margin on one cargo, and the
 score compares the player to the bot on the same seed (1 + (P&L - par) / max(|par|, $10k), clamped). A player who hedges
 as well as the bot scores the full P&L component; one who does better scores more.
 
@@ -84,6 +84,47 @@ Level 8 buys the calendar spread (front against second) for the whole cargo in 2
 the second month. Level 9 compares transit against detour including what the curve pays for the extra days, and anchors for
 any berth queue.
 
+## Tier 3: money, counterparties, limits (milestone 3)
+
+| Level | Title | Days | Instruments | Pass rule | Cards |
+|---|---|---|---|---|---|
+| 10 | Working capital | 42 | Brent, Dubai swap | cash never negative at a close, finance leg inside $2.5m, one cargo declined with a reason | Cost of carry includes money; A letter of credit is a promise and a fee; Prepayment is a loan |
+| 11 | Counterparties | 45 | Brent, Dubai swap | inside the concentration limit (2x capital per name) at every close, a dispute settled, a cargo delivered | Cheapest for a reason; Concentration; Due diligence is a position |
+| 12 | The risk manager | 30 | Brent, WTI, Dubai swap | inside every limit at every close, P&L at least $200k, at most one life lost | VaR is a quantile, not a maximum; Gross versus net; Reduce before you are told |
+| 13 | Storage and carry | 60 | Brent, WTI | carry locked and unwound after the flip, profitable, storage leg inside $450k | Cash and carry; Storage economics; Blending to a spec |
+
+Tier 3 knobs: normal regime, capital $50m and a $400m line, headlines 12 hours behind the market for the delayable events, the
+first rumours, three lives.
+
+### Scenarios and traps
+
+* **Level 10**: three cargoes at once (two VLCCs needing letters of credit, a Suezmax with a prepayment discount); the line carries
+  two. Rates rise 50 bp on day 12.
+* **Level 11**: Stellar at fair, Vantage well under fair (defaults on day 7), Meridian in between (disappears on day 3); Rhine bids
+  at fair and Adriatic Smallworks above it (downgraded on day 2, pays twelve days late); the inspector claims sulphur at discharge.
+* **Level 12**: a Suezmax of Arab Light seventy cents under fair, sold a dime over; tight limits; a seizure off Hormuz doubles vol
+  on day 8.
+* **Level 13**: Cushing full and the WTI curve in super-contango; a 500,000 bbl batch in tank, a sour parcel on offer for a blend,
+  a rumour on day 20, the hub's lines reverse on day 35 and the curve flips; prompt bids follow on days 36 and 44.
+
+### Pars and pass rates
+
+| Level | Par on seed 1 | Bot pass rate over 20 random seeds | Checked-in seeds |
+|---|---|---|---|
+| 10 | -$1,668,812 (LC fees, interest on two financed cargoes, hedges) | 100% | 1 to 10 |
+| 11 | $460,114 | 100% | 1 to 10 |
+| 12 | $417,632 | 75% (the P&L target: basis moves between the purchase and sale windows are unhedgeable with futures) | 1 to 4, 6 to 10, 12 |
+| 13 | $52,562 | 100% | 1 to 10 |
+
+### Solution bots
+
+Level 10 takes the Arab Light with a letter of credit and the Bonny with the prepayment, declines the Basrah with the line
+arithmetic as the reason, sells and hedges both. Level 11 buys Stellar's cargo, sells it to Rhine (not the high bidder who pays
+late), buys Vantage's cheap cargo and insures it, declines Meridian and Adriatic with reasons, settles the claim. Level 12 buys,
+sells and hedges in 120-lot chunks and stays inside the limits through the scare. Level 13 leases a tank, takes the batch, shorts
+the deferred month against the net exposure, sells into the prompt bid after the flip, lets the hedge unwind as the sale prices,
+and gives the tank back.
+
 ## Not yet
 
-Levels 10 to 20 are planned titles in the Academy and arrive with milestones 3 to 5.
+Levels 14 to 20 are planned titles in the Academy and arrive with milestones 4 and 5.

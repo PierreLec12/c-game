@@ -1,9 +1,9 @@
-import { attributionTotals, cargoMark, ckey, GRADES, grossLots, INSTRUMENTS, monthLabel, netLots, physicalExposureBbl, PORTS, positions, type AttributionLeg, type InstrumentId, type State } from "@desk/engine";
+import { attributionTotals, cargoMark, ckey, GRADES, grossLots, INSTRUMENTS, monthLabel, netLots, physicalExposureBbl, PORTS, positions, counterpartyExposure, type AttributionLeg, type InstrumentId, type State } from "@desk/engine";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
 import { Waterfall } from "../charts/Waterfall";
 
-export const LEG_LABEL: Record<AttributionLeg, string> = { flat: "Flat price", basis: "Basis (Brent-WTI)", time_spread: "Time spread", crack: "Crack", fees_slippage: "Fees and slippage", fx: "FX", finance: "Finance", options: "Options", freight: "Freight", demurrage: "Demurrage", storage: "Storage", quality: "Quality" };
+export const LEG_LABEL: Record<AttributionLeg, string> = { flat: "Flat price", basis: "Basis (Brent-WTI)", time_spread: "Time spread", crack: "Crack", fees_slippage: "Fees and slippage", fx: "FX", finance: "Finance", options: "Options", freight: "Freight", demurrage: "Demurrage", storage: "Storage", quality: "Quality", credit: "Credit" };
 
 export function waterfallRows(state: State) {
   const totals = attributionTotals(state.pnl.attribution);
@@ -87,6 +87,7 @@ export function Book() {
             {(Object.keys(net) as InstrumentId[]).filter((i) => state.level.instruments.includes(i)).map((i) => <LimitRow key={i} name={`Net lots ${INSTRUMENTS[i].name}`} now={Math.abs(net[i])} limit={state.risk.limits.netLots[i]} fmt="int" />)}
             <LimitRow name="Stop-loss (level P&L)" now={Math.max(0, -(state.pnl.total - state.risk.stopLossRef))} limit={state.risk.limits.stopLoss} fmt="usd" />
             <LimitRow name="Drawdown from peak" now={state.risk.maxDrawdown} limit={state.risk.limits.drawdown} fmt="usd" />
+            {state.risk.limits.concentration < 50 && <LimitRow name="Concentration (largest name, x capital)" now={Math.max(0, ...Object.values(counterpartyExposure(state).byId)) / state.capital} limit={state.risk.limits.concentration} fmt="mult" />}
           </tbody></table>
         <div className="small muted" style={{ marginTop: 6 }}>A breach at a close: a warning, then a forced reduction, then a life. Stop-loss and drawdown take a life at once.</div>
         <RequestLimit />
@@ -99,9 +100,10 @@ export function Book() {
   );
 }
 
-function LimitRow({ name, now, limit, fmt }: { name: string; now: number; limit: number; fmt: "usd" | "int" }) {
+function LimitRow({ name, now, limit, fmt }: { name: string; now: number; limit: number; fmt: "usd" | "int" | "pct" | "mult" }) {
   const over = now > limit;
-  return <tr><td>{name}</td><td className="num"><Fig v={now} fmt={fmt} what={name} why="Current value on the book." /></td><td className="num"><Fig v={limit} fmt={fmt} what={`${name} limit`} why="Set by the level; a request can raise it on a clean track record." /></td><td><span className={`badge ${over ? "bad" : "ok"}`}>{over ? "breach" : "inside"}</span></td></tr>;
+  const f = fmt === "mult" ? "px" : fmt;
+  return <tr><td>{name}</td><td className="num"><Fig v={now} fmt={f} decimals={1} what={name} why="Current value on the book." /></td><td className="num"><Fig v={limit} fmt={f} decimals={1} what={`${name} limit`} why="Set by the level; a request can raise it on a clean track record." /></td><td><span className={`badge ${over ? "bad" : "ok"}`}>{over ? "breach" : "inside"}</span></td></tr>;
 }
 
 function RequestLimit() {

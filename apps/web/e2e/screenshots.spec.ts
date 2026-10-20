@@ -35,4 +35,16 @@ test("screenshots of every screen at a fixed tick", async ({ page }) => {
   await page.getByRole("link", { name: "Book & risk", exact: true }).click();
   await page.waitForTimeout(200);
   await page.screenshot({ path: `${dir}book-physical.png`, fullPage: false });
+  // the money: level 10, seed 1, day 3: letters of credit open, a prepayment made
+  await demo(page, 10, 1, 72);
+  await page.waitForTimeout(300);
+  await page.getByRole("link", { name: "Finance", exact: true }).click();
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${dir}finance-lcs.png`, fullPage: false });
+  // storage: level 13, seed 1, day 12: a tank with a parcel, deferred paper against it
+  await demo(page, 13, 1, 290);
+  await page.waitForTimeout(300);
+  await page.getByRole("link", { name: "Desk", exact: true }).click();
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: `${dir}desk-tanks.png`, fullPage: false });
 });

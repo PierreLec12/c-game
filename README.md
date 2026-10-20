@@ -7,24 +7,27 @@ wrong.
 **Play it:** https://pierrelec12.github.io/c-game/ (static, offline after load, nothing to install; level 0 takes two
 minutes).
 
-Milestones 1 and 2 ship the paper desk and the physical desk: tiers 0 to 2 (levels 0 to 9), the engine core with cargoes,
-pricing windows, ships, routes and chokepoints on a bundled coastline, the Bridge, Markets, Desk, Map, Book and risk, Intel,
-Finance and Academy screens, saves, and the debrief with a solution-bot ghost line and what-if replays. Working capital,
-counterparties in full, storage and the risk manager's lives come in milestone 3.
+Milestones 1 to 3 ship the paper desk, the physical desk and the money: tiers 0 to 3 (levels 0 to 13), the engine core with
+cargoes, pricing windows, ships, routes and chokepoints on a bundled coastline, letters of credit, prepayment, a covenant,
+insurance, counterparties with ratings and memory, tanks and blending, delayed headlines and rumours, the Bridge, Markets, Desk,
+Map, Book and risk, Intel, Finance and Academy screens, saves, and the debrief with a solution-bot ghost line and what-if
+replays. The refinery, gas and LNG, options and signals come in milestone 4.
 
 ![Markets](docs/screenshots/markets.png)
 
 ![Map](docs/screenshots/map.png)
 
-## What it teaches (tiers 1 and 2)
+## What it teaches (tiers 1 to 3)
 
 Lots, ticks and settles; sizing to a VaR limit before choosing a direction; initial and variation margin and what a
 margin call does; contango, backwardation, full carry and the roll; spreads as packages, Brent-WTI and the 3-2-1 crack;
 releases, consensus and surprise, positioning as a crowd, a leak's base rate. Then the cargo: FOB, CIF and DES, the laycan
 and the bill of lading, a pricing window as an exposure, lots from barrels, hedging the window in a month that outlives it,
 basis and grade differentials, selling East on Dubai, the EFP, the hidden time spread in mismatched windows, freight as a
-share of the barrel, a restricted strait as a freight shock and a time spread at once, storage on water. Every number on
-screen explains itself on hover. Every reference figure is labelled stylised.
+share of the barrel, a restricted strait as a freight shock and a time spread at once, storage on water. Then the money: working capital, letters
+of credit, prepayment as a loan, the cheapest name for a reason, concentration, due diligence, VaR as a quantile, gross versus
+net, reducing before you are told, cash and carry, storage economics, blending to a spec. Every number on screen explains itself
+on hover. Every reference figure is labelled stylised.
 
 ## Run it locally
 
