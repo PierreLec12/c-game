@@ -500,6 +500,28 @@ See `docs/LEVELS.md`. Decisions recorded:
   on two consecutive off-baseline readings (one for the hourly hotspot feed), sized inside a $3m VaR, and leaves three days after
   the headline. One random seed in twelve loses money on the trades (a true rumour moved the market against a signal position).
 
+## UI in milestone 4
+
+* **Markets** gains an options panel under the curve once options are unlocked: the chain of listed strikes for a month (call and
+  put bid, ask, implied vol and delta, every cell explaining itself with the quote's working), an option ticket that shows the
+  estimated fill, slippage, fees, notional, delta-equivalent lots and the option's expiry before the click, and a strategy
+  builder whose legs come from the engine (one package, one tag). JKM joins the instrument strip. The ticket's tag can be
+  "signal" so a trade made on a signal is counted.
+* **Book** shows option positions with their model value, a Greeks table (delta, gamma, vega, theta, delta lots per position and
+  per instrument, with totals), the naked-short count against its limit, and the options rows of the waterfall broken out by
+  Greek.
+* **Desk** shows the refinery (status, runs slider, slate choice with each slate's margin and its working, the yields table,
+  today's margin, the screen's 3-2-1 against the plant's crack, crack units held against the target for the days left, realised
+  margin and a sparkline of the daily margin) and, on an LNG cargo card, quantities in MMBtu, the exposure split by hub with a
+  coverage bar per hub, the netback line (purchase plus freight plus regas plus boil-off against the delivered price), the hedge
+  size in each contract's units, and the regas slot button.
+* **Intel** shows the feed button, then one row per signal: latest reading against its baseline, a sparkline, badges when the
+  reading is off its baseline and when the headline has arrived, and the series' lag note and what-it-can-tell-you sentence.
+* **Map** draws a marker per visible signal at its place (a ring of dots for the cluster, a count for transits, an orange disc for
+  the hotspot, an HDD badge for the forecast) with a hover callout.
+* The test harness gains a `lab` hook that runs a registered level with extra instruments, unlocks, a refinery or events patched
+  in, so a screen can be exercised before its level exists; six new screenshot captures are guarded by the level's existence.
+
 ## Deviations recorded in milestone 4
 
 * Refinery capacity 100 kb/d, not 200 (see above).

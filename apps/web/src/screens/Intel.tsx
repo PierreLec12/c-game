@@ -1,6 +1,7 @@
 import { formatClock } from "@desk/engine";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
+import { SignalsPanel } from "./Signals";
 
 export function Intel() {
   const state = useGame((g) => g.state);
@@ -26,9 +27,9 @@ export function Intel() {
             <tbody>{releases.map((r) => <tr key={r.id} className={r.published ? "muted" : ""}><td>{r.name}</td><td className="small">{formatClock(state.startDay, r.tick)}</td><td className="num">{r.consensus ? <Fig v={r.consensus.v} fmt="signed" decimals={1} what={`${r.name} consensus (${r.unit})`} why={r.consensus.why} at={r.consensus.at} /> : <Fig v={null} what="Consensus" notYet={r.name === "Weekly crude inventories" ? "Published on the morning of the release." : "This release has no consensus figure."} />}</td><td className="num">{r.actual ? <Fig v={r.actual.v} fmt="signed" decimals={1} what={`${r.name} actual (${r.unit})`} why={r.actual.why} at={r.actual.at} /> : <Fig v={null} what="Actual" notYet="Not published yet." />}</td></tr>)}
               {releases.length === 0 && <tr><td colSpan={4} className="muted">No scheduled releases in this level.</td></tr>}</tbody></table>
         </div>
-        <div className="panel" style={{ marginTop: 14 }}>
-          <h2>Signals</h2>
-          <div className="notyet">not yet: anchored tanker clusters, transit counts, hotspots and degree days arrive at level 17 (milestone 4).</div>
+        <div className="panel accent-gas" id="signals" style={{ marginTop: 14 }}>
+          <h2>Signals <span className="muted">(series that run ahead of the news; each says its lag)</span></h2>
+          <SignalsPanel state={state} />
         </div>
       </div>
     </div>

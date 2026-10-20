@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { geoEqualEarth, geoPath } from "d3-geo";
-import { CHOKEPOINTS, CHOKEPOINT_SPECS, COUNTERPARTIES, GRADES, NODE_BY_ID, PORTS, VESSEL_CLASSES, formatClock, legMark, passageOptions, physicalExposureBbl, positionAlong, shortestPath, windowText, type State, type Voyage } from "@desk/engine";
+import { CHOKEPOINTS, CHOKEPOINT_SPECS, COUNTERPARTIES, GRADES, NODE_BY_ID, PORTS, SIGNAL_KINDS, VESSEL_CLASSES, formatClock, legMark, passageOptions, physicalExposureBbl, positionAlong, shortestPath, signalReading, signalsVisible, unitOf, windowText, type Signal, type State, type Voyage } from "@desk/engine";
 import land from "../map/land.json";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
@@ -15,7 +15,7 @@ const usd = (x: number) => (x < 0 ? "-$" : "$") + Math.abs(Math.round(x)).toLoca
 
 export function Map() {
   const state = useGame((g) => g.state);
-  const [hover, setHover] = useState<{ x: number; y: number; kind: "ship" | "port" | "chokepoint" | "route"; id: string } | null>(null);
+  const [hover, setHover] = useState<{ x: number; y: number; kind: "ship" | "port" | "chokepoint" | "route" | "signal"; id: string } | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [scrub, setScrub] = useState<number | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -34,6 +34,7 @@ export function Map() {
     landRef.current = off;
   }, [projection]);
   const tickShown = scrub ?? state?.tick ?? 0;
+  const sigs = useMemo(() => (state ? signalsVisible(state) : []), [state]);
   // ship positions at the shown tick (live, or replayed along the schedule for the scrubber)
   const ships = useMemo(() => {
     if (!state) return [];
@@ -74,6 +75,37 @@ export function Map() {
       ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
       if (st && st.status !== "open" && (state.tick - st.since) < 12) { ctx.strokeStyle = "rgba(255,107,107,0.5)"; ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI * 2); ctx.stroke(); }
     }
+    // signals: a ring whose radius grows with the distance from the baseline, with a mark by kind
+    for (const sig of sigs) {
+      const { v } = signalReading(sig);
+      const sd = SIGNAL_KINDS[sig.kind].sd;
+      const dev = v === null ? 0 : Math.abs(v - sig.baseline) / sd;
+      const hot = dev > 2.5;
+      const r = 7 + Math.min(18, dev * 2.5);
+      const [x, y] = pt(sig.lon, sig.lat);
+      ctx.lineWidth = hot ? 1.6 : 1;
+      if (sig.kind === "tanker_cluster") {
+        const n = Math.max(1, Math.min(30, Math.round(v ?? sig.baseline)));
+        ctx.fillStyle = hot ? "#e0c58b" : "rgba(224,197,139,0.6)";
+        for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; ctx.beginPath(); ctx.arc(x + r * Math.cos(a), y + r * Math.sin(a), 1.7, 0, Math.PI * 2); ctx.fill(); }
+      } else if (sig.kind === "transits") {
+        ctx.strokeStyle = hot ? "#f2b53f" : "rgba(90,169,255,0.85)";
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = "#e6edf3"; ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillText(v === null ? "?" : String(v), x, y - r - 3); ctx.textAlign = "start";
+      } else if (sig.kind === "hotspot") {
+        ctx.fillStyle = hot ? "rgba(255,140,60,0.35)" : "rgba(255,140,60,0.15)";
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#ff8c3c"; ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+      } else {
+        ctx.strokeStyle = hot ? "#5aa9ff" : "rgba(90,169,255,0.6)";
+        ctx.beginPath(); ctx.arc(x, y, r + 8, 0, Math.PI * 2); ctx.stroke();
+        const label = v === null ? "HDD ?" : `HDD ${v >= 0 ? "+" : ""}${v.toFixed(1)}`;
+        ctx.font = "bold 10px sans-serif";
+        const w = ctx.measureText(label).width + 8;
+        ctx.fillStyle = hot ? "#5aa9ff" : "rgba(90,169,255,0.6)"; ctx.fillRect(x - w / 2, y - 8, w, 16);
+        ctx.fillStyle = "#0b1220"; ctx.textAlign = "center"; ctx.fillText(label, x, y + 4); ctx.textAlign = "start";
+      }
+    }
     // idle vessels
     for (const vs of state.vessels) {
       if (vs.voyageId) continue;
@@ -95,18 +127,19 @@ export function Map() {
       ctx.beginPath(); ctx.arc(x, y, selected === v.cargoId ? 6 : 4.5, 0, Math.PI * 2); ctx.fill();
       ctx.strokeStyle = "#0b1220"; ctx.lineWidth = 1; ctx.stroke();
     }
-  }, [state, ships, selected, hover, projection, path]);
+  }, [state, ships, sigs, selected, hover, projection, path]);
 
   if (!state) return <div className="panel"><h1>Map</h1><p className="notyet">not yet: start a level from the Academy.</p></div>;
   const onMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * W, y = ((e.clientY - rect.top) / rect.height) * H;
     const pt = (lon: number, lat: number) => projection([lon, lat]) as [number, number];
-    const acc: { best: { d: number; kind: "ship" | "port" | "chokepoint"; id: string } | null } = { best: null };
-    const consider = (kind: "ship" | "port" | "chokepoint", id: string, lon: number, lat: number, r: number) => { const [px, py] = pt(lon, lat); const d = Math.hypot(px - x, py - y); if (d < r && (!acc.best || d < acc.best.d)) acc.best = { d, kind, id }; };
+    const acc: { best: { d: number; kind: "ship" | "port" | "chokepoint" | "signal"; id: string } | null } = { best: null };
+    const consider = (kind: "ship" | "port" | "chokepoint" | "signal", id: string, lon: number, lat: number, r: number) => { const [px, py] = pt(lon, lat); const d = Math.hypot(px - x, py - y); if (d < r && (!acc.best || d < acc.best.d)) acc.best = { d, kind, id }; };
     for (const { v, pos } of ships) consider("ship", v.id, pos.lon, pos.lat, 10);
     for (const cp of CHOKEPOINTS) consider("chokepoint", cp.id, cp.lon, cp.lat, 9);
     for (const p of Object.values(PORTS)) if (p.node) consider("port", p.id, p.lon, p.lat, 7);
+    for (const sig of sigs) consider("signal", sig.id, sig.lon, sig.lat, 16);
     const best = acc.best;
     setHover(best ? { x: e.clientX - rect.left, y: e.clientY - rect.top, kind: best.kind, id: best.id } : null);
   };
@@ -114,13 +147,13 @@ export function Map() {
   return (
     <div className="grid" style={{ gridTemplateColumns: "1fr" }}>
       <div className="panel" style={{ position: "relative", padding: 8 }} id="map">
-        <canvas ref={canvasRef} width={W} height={H} style={{ width: "100%", height: "auto", display: "block", borderRadius: 6, cursor: hover ? "pointer" : "default" }} onMouseMove={onMove} onMouseLeave={() => setHover(null)} onClick={onClick} role="img" aria-label={`World map: ${ships.length} ship${ships.length === 1 ? "" : "s"} under way, ${Object.values(state.chokepoints).filter((c) => c.status !== "open").length} chokepoint restrictions`} />
-        {hover && <Callout state={state} hover={hover} ships={ships} />}
+        <canvas ref={canvasRef} width={W} height={H} style={{ width: "100%", height: "auto", display: "block", borderRadius: 6, cursor: hover ? "pointer" : "default" }} onMouseMove={onMove} onMouseLeave={() => setHover(null)} onClick={onClick} role="img" aria-label={`World map: ${ships.length} ship${ships.length === 1 ? "" : "s"} under way, ${Object.values(state.chokepoints).filter((c) => c.status !== "open").length} chokepoint restrictions${sigs.length ? `, ${sigs.length} signal${sigs.length === 1 ? "" : "s"} on the feed` : ""}`} />
+        {hover && <Callout state={state} hover={hover} ships={ships} sigs={sigs} />}
         <div className="flex small" style={{ marginTop: 6 }}>
           <span className="muted">Time scrubber</span>
           <input type="range" min={0} max={state.tick} value={tickShown} onChange={(e) => setScrub(Number(e.target.value) === state.tick ? null : Number(e.target.value))} style={{ flex: 1 }} aria-label="scrub the level's timeline" />
           <span className="mono">{formatClock(state.startDay, tickShown)}{scrub !== null && <button className="ghost" onClick={() => setScrub(null)}>live</button>}</span>
-          <span className="muted">· click a ship to pin its route · teal ship: under way, sand: waiting, red: held at a passage</span>
+          <span className="muted">· click a ship to pin its route · teal ship: under way, sand: waiting, red: held at a passage{sigs.length ? " · rings: signals, wider the further from baseline" : ""}</span>
         </div>
         <div className="small muted" id="chokepoints">
           {CHOKEPOINTS.map((cp) => { const st = state.chokepoints[cp.id]; return <span key={cp.id} style={{ marginRight: 10 }}><span className={`badge ${st?.status === "closed" ? "bad" : st?.status === "restricted" ? "warn" : ""}`}>{cp.name}: {st?.status ?? "open"}</span></span>; })}
@@ -149,11 +182,18 @@ function trailAt(state: State, v: Voyage, tick: number): [number, number, number
   return v.trail.filter((t) => t[0] <= tick).slice(-48);
 }
 
-function Callout({ state, hover, ships }: { state: State; hover: { x: number; y: number; kind: string; id: string }; ships: { v: Voyage; pos: { lon: number; lat: number } }[] }) {
+function Callout({ state, hover, ships, sigs }: { state: State; hover: { x: number; y: number; kind: string; id: string }; ships: { v: Voyage; pos: { lon: number; lat: number } }[]; sigs: Signal[] }) {
   const style: React.CSSProperties = { position: "absolute", left: Math.min(hover.x + 12, 700), top: hover.y + 12, background: "#1c2742", border: "1px solid var(--muted)", borderRadius: 6, padding: "8px 10px", width: 340, fontSize: 12, zIndex: 20, pointerEvents: "none" };
   if (hover.kind === "port") {
     const p = PORTS[hover.id];
     return <div style={style}><strong>{p.name}</strong><div className="muted">takes up to {VESSEL_CLASSES[p.maxClass].name}{p.loads.length ? ` · loads ${p.loads.map((g) => GRADES[g].name).join(", ")}` : ""}{p.discharge ? " · discharge" : ""}{p.storage ? " · storage" : ""}{p.lng ? ` · LNG ${p.lng}` : ""}</div>{state.portCongestion[p.id] && state.portCongestion[p.id] > state.tick ? <div style={{ color: "var(--crude)" }}>congested until {formatClock(state.startDay, state.portCongestion[p.id])}</div> : null}</div>;
+  }
+  if (hover.kind === "signal") {
+    const sig = sigs.find((s) => s.id === hover.id);
+    if (!sig) return null;
+    const { v, off } = signalReading(sig);
+    const d = sig.kind === "cold_forecast" ? 1 : 0;
+    return <div style={style}><strong>{sig.label}</strong> <span className="muted">{sig.place}</span>{off && <span className="badge warn">off its baseline</span>}<div>reading {v === null ? "not yet" : v.toFixed(d)} {sig.unit} · baseline {sig.baseline.toFixed(d)} · bears on {sig.inst}, {sig.direction}</div><div className="muted">{sig.what}</div><div className="muted">Lag: {sig.lagNote}.</div></div>;
   }
   if (hover.kind === "chokepoint") {
     const cp = CHOKEPOINT_SPECS[hover.id];
@@ -175,11 +215,11 @@ function Callout({ state, hover, ships }: { state: State; hover: { x: number; y:
   return (
     <div style={style}>
       <strong>{vessel.name}</strong> <span className="muted">{VESSEL_CLASSES[vessel.cls].name}, {COUNTERPARTIES[vessel.owner].name}</span>
-      <div>{GRADES[cargo.grade].name} {cargo.bbl.toLocaleString()} bbl · {leg.kind} leg {PORTS[cargo.loadPort].name} to {PORTS[cargo.dischargePort].name} · {v.status.replace("_", " ")}</div>
+      <div>{GRADES[cargo.grade].name} {cargo.bbl.toLocaleString()} {unitOf(cargo)} · {leg.kind} leg {PORTS[cargo.loadPort].name} to {PORTS[cargo.dischargePort].name} · {v.status.replace("_", " ")}</div>
       <div className="muted">{Math.round(leg.nm).toLocaleString()} nm, {(leg.nm / (VESSEL_CLASSES[vessel.cls].speedLaden * 24)).toFixed(1)} days at service speed, {Math.round(v.speedFactor * 100)}% now · ETA {formatClock(state.startDay, v.eta)}{v.detour ? ` · ${v.detour}` : ""}</div>
       <div className="muted">freight {usd(v.lumpUsd)} = {(v.lumpUsd / cargo.bbl).toFixed(2)} $/bbl, {((v.lumpUsd / cargo.bbl) / state.factors.brentPrompt * 100).toFixed(1)}% of the barrel</div>
       <div>window: purchase {windowText(cargo.purchase.window)} {p.unpriced.length}/{p.n} unpriced{cargo.sale ? `; sale ${windowText(cargo.sale.window)} ${legMark(state, cargo, cargo.sale).unpriced.length}/${legMark(state, cargo, cargo.sale).n} unpriced` : "; unsold"}</div>
-      <div>hedge: {held} Brent lots · <span style={{ color: Math.abs(unhedged) > cargo.bbl * 0.1 ? "var(--risk)" : "var(--cash)" }}>unhedged {Math.round(unhedged).toLocaleString()} bbl</span></div>
+      {cargo.grade === "LNG" ? <div>exposure {Math.round(phys).toLocaleString()} MMBtu: hedged on {cargo.purchase.basis} and {cargo.sale ? cargo.sale.basis : "the delivery hub"}; see the cargo card on the Desk</div> : <div>hedge: {held} Brent lots · <span style={{ color: Math.abs(unhedged) > cargo.bbl * 0.1 ? "var(--risk)" : "var(--cash)" }}>unhedged {Math.round(unhedged).toLocaleString()} bbl</span></div>}
       {opts && <div style={{ color: "var(--crude)" }}>transit: +{opts.proceed.extraDays} d, {usd(opts.proceed.costUsd)} · {opts.reroute ? `round ${opts.reroute.via}: +${opts.reroute.extraDays.toFixed(1)} d, ${usd(opts.reroute.costUsd)}` : "no alternative"}</div>}
     </div>
   );

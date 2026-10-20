@@ -41,6 +41,9 @@ main { flex: 1; overflow: auto; padding: 16px; }
 .grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 .grid.markets { grid-template-columns: minmax(0, 3fr) minmax(360px, 2fr); }
 @media (max-width: 1000px) { .grid.markets { grid-template-columns: 1fr; } }
+.grid.options { grid-template-columns: minmax(0, 3fr) minmax(340px, 2fr); }
+@media (max-width: 1000px) { .grid.options { grid-template-columns: 1fr; } }
+td.clickable { cursor: pointer; } td.clickable:hover { background: var(--navy-3); } td.clickable.selected { outline: 1px solid var(--gas); outline-offset: -1px; }
 .panel { background: var(--navy-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; min-width: 0; }
 .panel.accent-crude { border-top: 3px solid var(--crude); } .panel.accent-risk { border-top: 3px solid var(--risk); } .panel.accent-mentor { border-top: 3px solid var(--mentor); } .panel.accent-cash { border-top: 3px solid var(--cash); } .panel.accent-gas { border-top: 3px solid var(--gas); }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }

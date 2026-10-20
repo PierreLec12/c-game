@@ -4,10 +4,11 @@ import { LEVELS, PLANNED_TITLES } from "@desk/content";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
 import { Curve } from "../charts/Curve";
+import { OptionsPanel } from "./Options";
 
-const ALL: InstrumentId[] = ["BRENT", "WTI", "DUBAI", "RBOB", "ULSD", "HH", "TTF"];
-const UNLOCK_LEVEL: Record<InstrumentId, number> = { BRENT: 0, WTI: 3, RBOB: 3, ULSD: 3, HH: 15, TTF: 15, DUBAI: 7 };
-const COLOUR: Record<InstrumentId, string> = { BRENT: "var(--crude)", WTI: "var(--crude)", RBOB: "var(--products)", ULSD: "var(--teal)", HH: "var(--gas)", TTF: "var(--lng)", DUBAI: "var(--freight)" };
+const ALL: InstrumentId[] = ["BRENT", "WTI", "DUBAI", "RBOB", "ULSD", "HH", "TTF", "JKM"];
+const UNLOCK_LEVEL: Record<InstrumentId, number> = { BRENT: 0, WTI: 3, RBOB: 3, ULSD: 3, HH: 15, TTF: 15, DUBAI: 7, JKM: 15 };
+const COLOUR: Record<InstrumentId, string> = { BRENT: "var(--crude)", WTI: "var(--crude)", RBOB: "var(--products)", ULSD: "var(--teal)", HH: "var(--gas)", TTF: "var(--lng)", DUBAI: "var(--freight)", JKM: "var(--lng)" };
 
 export function Markets() {
   const state = useGame((g) => g.state);
@@ -58,6 +59,7 @@ export function Markets() {
         <Ticket state={state} inst={inst} />
         <Orders state={state} />
       </div>
+      <OptionsPanel state={state} inst={inst} />
       <div className="panel" id="spreads"><Spreads state={state} /></div>
       <div className="panel" id="vol"><VolSurface state={state} /></div>
     </div>
@@ -101,7 +103,7 @@ function VolSurface({ state }: { state: State }) {
           const f = state.factors.vol[i];
           return <tr key={i}><td>{INSTRUMENTS[i].name}</td>{tenors.map((t) => <td key={t} className="num"><Fig v={impliedVolAt(f, t)} fmt="pct" decimals={1} what={`${INSTRUMENTS[i].name} ${t}-month at-the-money implied vol`} why={`Regime ${state.world.regime} base vol times the instrument multiple, raised by the geopolitics index (${state.world.geo.toFixed(2)}), event intensity (${state.world.eventIntensity.toFixed(2)}) and a known release ahead; a mild downward term structure (stylised).`} /></td>)}<td className="num"><Fig v={impliedVolAt(f, 1, -0.1) - impliedVolAt(f, 1)} fmt="pct" decimals={1} what="Put skew" why="Vol points added for a put 10% below the forward: puts are richer (stylised)." /></td></tr>;
         })}</tbody></table>
-      <div className="muted small">Options trade from level 16; until then the surface is read, not traded.</div>
+      <div className="muted small">{state.level.unlockedActions.includes("option_order") ? "Options trade on the chain above, priced off this surface." : "Options trade from level 16; until then the surface is read, not traded."}</div>
     </>
   );
 }
@@ -159,7 +161,7 @@ export function Ticket({ state, inst }: { state: State; inst: InstrumentId }) {
         <label>Lots<input id="ticket-qty" aria-label="lots" type="number" min={1} step={1} value={qty} onChange={(e) => setQty(Math.max(1, Math.floor(Number(e.target.value) || 1)))} style={{ width: 80 }} /></label>
         {tab === "outright" && <label>Type<select aria-label="order type" value={kind} onChange={(e) => setKind(e.target.value as "market" | "limit" | "stop")}><option value="market">Market</option><option value="limit">Limit</option><option value="stop">Stop</option></select></label>}
         {tab === "outright" && kind !== "market" && <label>Price<input aria-label="price" type="number" step={spec.tick} value={price} onChange={(e) => setPrice(e.target.value)} style={{ width: 100 }} /></label>}
-        {tab === "outright" && state.level.tier >= 2 && <label>Tag<select aria-label="tag" value={tag} onChange={(e) => setTag(e.target.value as LegTag)}><option value="outright">Outright</option><option value="hedge">Hedge</option></select></label>}
+        {tab === "outright" && state.level.tier >= 2 && <label>Tag<select aria-label="tag" value={tag} onChange={(e) => setTag(e.target.value as LegTag)}><option value="outright">Outright</option><option value="hedge">Hedge</option><option value="signal">Signal</option></select></label>}
         {tab === "spread" && <label>Package<select aria-label="spread type" value={spreadName} onChange={(e) => setSpreadName(e.target.value as "time" | "inter" | "crack321")}><option value="time">Time spread (this month vs next)</option><option value="inter">Inter-commodity (vs another front)</option><option value="crack321" disabled={!state.level.instruments.includes("RBOB")}>3-2-1 crack (units)</option></select></label>}
         {tab === "spread" && spreadName === "inter" && <label>Against<select aria-label="second leg" value={leg2Inst} onChange={(e) => setLeg2Inst(e.target.value as InstrumentId)}>{ALL.filter((i) => i !== inst && state.level.instruments.includes(i)).map((i) => <option key={i} value={i}>{INSTRUMENTS[i].name}</option>)}</select></label>}
       </div>
