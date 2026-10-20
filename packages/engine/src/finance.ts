@@ -127,7 +127,7 @@ export function checkMarginCall(state: State, nextCloseTick: number): { raised: 
     if (draw > 0) {
       f.lineDrawn += draw;
       f.autoDrawn += draw;
-      ledger(state, "line_draw", draw, `Drew $${Math.round(draw).toLocaleString()} on the line to cover variation margin`);
+      ledger(state, "line_draw", draw, `Drew $${Math.round(draw).toLocaleString()} on the line to cover the day's cash shortfall (variation margin, interest, payments)`);
     }
     if (f.cashUSD < -0.005) {
       const amount = -f.cashUSD;

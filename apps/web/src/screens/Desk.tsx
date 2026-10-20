@@ -98,12 +98,14 @@ function CargoCard({ c, state }: { c: Cargo; state: State }) {
   const v = state.voyages.find((x) => x.id === c.voyageId);
   const vessel = state.vessels.find((x) => x.id === c.vesselId);
   const phys = physicalExposureBbl(state).byCargo[c.id] ?? 0;
-  const held = state.lots.filter((l) => l.inst === "BRENT").reduce((a, l) => a + l.qty, 0) * 1000;
+  const tankOf = state.tanks.find((k) => k.id === c.tankId);
+  const hedgeInst = tankOf ? (tankOf.port === "CUSHING" || tankOf.port === "HOUSTON" || tankOf.port === "ST_JAMES" ? "WTI" : "BRENT") : "BRENT";
+  const held = state.lots.filter((l) => l.inst === hedgeInst).reduce((a, l) => a + l.qty, 0) * 1000;
   const coverage = Math.abs(phys) > 1000 ? Math.min(1.5, Math.max(0, -held / phys)) : null;
   const [speed, setSpeed] = useState(v?.speedFactor ?? 1);
   const [anchor, setAnchor] = useState(0);
   const running = state.level.status === "running";
-  const quotes = !c.vesselId ? charterQuotes(state, c) : [];
+  const quotes = !c.vesselId && !isPipeline(c) ? charterQuotes(state, c) : [];
   const opts = v && v.status === "waiting_chokepoint" && v.waitUntil === null ? passageOptions(state, v) : null;
   return (
     <div style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
@@ -113,13 +115,13 @@ function CargoCard({ c, state }: { c: Cargo; state: State }) {
         <span className="spacer" />
         <span>mark <Fig v={m.valueUsd} fmt="usd" sign what="Cargo mark" why={`Sale ${c.sale ? "(contracted)" : "(expected at market)"} ${usd(c.sale ? (m.salePerBbl ?? 0) * c.bbl : m.expectedSalePerBbl * c.bbl)} minus purchase ${usd(m.purchasePerBbl * c.bbl)} minus freight ${usd(m.freightUsd)} minus demurrage, war risk and claims ${usd(m.extra.demurrage + m.extra.warRisk + m.extra.quality)}; legs already paid or received are out of the mark and in cash.`} /></span>
       </div>
-      <div className="small muted">{c.purchase.incoterm} {PORTS[c.loadPort].name} from {COUNTERPARTIES[c.purchase.counterparty].name} · laycan days {c.laycan[0]}-{c.laycan[1]} · {c.sale ? `${c.sale.incoterm} ${PORTS[c.sale.port].name} to ${COUNTERPARTIES[c.sale.counterparty].name}` : `unsold: marked delivered ${PORTS[c.dischargePort].name} at the market differential`}{c.dischargeWindow ? ` · discharge days ${c.dischargeWindow[0]}-${c.dischargeWindow[1]}` : ""}</div>
+      <div className="small muted">{c.purchase.incoterm} {PORTS[c.loadPort].name} from {COUNTERPARTIES[c.purchase.counterparty].name} · {isPipeline(c) ? `transfer days ${c.laycan[0]}-${c.laycan[1]}` : `laycan days ${c.laycan[0]}-${c.laycan[1]}`} · {c.sale ? `${c.sale.incoterm} ${PORTS[c.sale.port].name} to ${COUNTERPARTIES[c.sale.counterparty].name}` : c.tankId ? `in tank ${c.tankId} at ${PORTS[tankOf?.port ?? c.loadPort].name}: the oil is marked in the tank; this card carries the purchase until it is paid` : `unsold: marked delivered ${PORTS[c.dischargePort].name} at the market differential`}{c.dischargeWindow ? ` · discharge days ${c.dischargeWindow[0]}-${c.dischargeWindow[1]}` : ""}</div>
       <div style={{ margin: "4px 0" }}><WindowBar state={state} c={c} which="purchase" /></div>
       <div style={{ margin: "4px 0" }}><WindowBar state={state} c={c} which="sale" /></div>
       <div className="small" style={{ margin: "4px 0" }}>
         Exposure <Fig v={phys} fmt="int" what="This cargo's net unpriced barrels" why="Long on the unpriced sale or the unsold oil, short on the unpriced purchase." /> bbl · hedge coverage{" "}
         {coverage === null ? <span className="muted">n/a (no exposure)</span> : <span style={{ display: "inline-block", width: 120, height: 10, background: "var(--navy-3)", borderRadius: 5, verticalAlign: "middle", position: "relative" }}><span style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${Math.min(100, coverage * 100)}%`, background: coverage > 1.1 || coverage < 0.9 ? "var(--risk)" : "var(--cash)", borderRadius: 5 }} /></span>}
-        {coverage !== null && <Fig v={coverage} fmt="pct" decimals={0} what="Hedge coverage" why={`Brent futures held (${held.toLocaleString()} bbl) against this cargo's exposure. Red outside 90% to 110%.`} />}
+        {coverage !== null && <Fig v={coverage} fmt="pct" decimals={0} what="Hedge coverage" why={`${hedgeInst} futures held (${held.toLocaleString()} bbl) against this cargo's exposure. Red outside 90% to 110%.`} />}
         {" "}· freight <Fig v={c.freight.fixedUsd ?? c.freight.expectedUsd} fmt="usd" what={c.freight.fixedUsd !== null ? "Freight fixed" : "Freight expected"} why={c.freight.fixedUsd !== null ? `Voyage charter lump sum: ${((c.freight.fixedUsd) / c.bbl).toFixed(2)} $/bbl.${c.freight.paidTick !== null ? " Paid at delivery." : ""}` : "The cheapest fitting quote on the Desk now."} />
         {c.demurrageUsd > 0 && <> · demurrage <Fig v={c.demurrageUsd} fmt="usd" what="Demurrage" why="Hours beyond laytime at the discharge port times the ship's daily hire." /></>}
         {c.warRiskUsd > 0 && <> · war risk and detour <Fig v={c.warRiskUsd} fmt="usd" what="War risk and detour hire" why="Charged when transiting a restricted passage or going round it." /></>}
@@ -138,7 +140,7 @@ function CargoCard({ c, state }: { c: Cargo; state: State }) {
       )}
       {c.cancelled && <div className="small" style={{ color: "var(--risk)" }}>Cancelled: {c.cancelled.reason}.</div>}
       {c.claims.map((k) => <div key={k.id} className="small" style={{ color: "var(--risk)" }}>Claim {k.id} ({k.status}): {k.text} {usd(k.amountUsd)}{k.status === "open" && <> <button onClick={() => submit({ type: "settle_claim", player: "p1", cargoId: c.id, claimId: k.id })}>Settle</button> <button onClick={() => submit({ type: "contest_claim", player: "p1", cargoId: c.id, claimId: k.id })}>Contest</button></>}</div>)}
-      {!c.vesselId && running && (
+      {!c.vesselId && running && !isPipeline(c) && c.status !== "cancelled" && (
         <div style={{ marginTop: 6 }}>
           <div className="small muted">Charter quotes (voyage, lump sum; stylised hire times days plus margin):</div>
           <table><thead><tr><th>Ship</th><th>Class</th><th>Owner</th><th className="num">Hire/day</th><th className="num">Ballast d</th><th className="num">Laden d</th><th className="num">Lump sum</th><th className="num">$/bbl</th><th className="num">At load port</th><th></th></tr></thead>
