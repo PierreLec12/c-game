@@ -23,3 +23,6 @@ export * from "./physical";
 export * from "./voyages";
 export * from "./counterparties";
 export * from "./storage";
+export * from "./optionbook";
+export * from "./refinery";
+export * from "./signals";

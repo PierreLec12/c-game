@@ -78,7 +78,7 @@ export function parseMonthKey(key: string): { year: number; month: number } {
 const MONTH_CODES = ["F", "G", "H", "J", "K", "M", "N", "Q", "U", "V", "X", "Z"];
 export function contractCode(inst: InstrumentId, key: string): string {
   const { year, month } = parseMonthKey(key);
-  const prefix = { BRENT: "BRN", WTI: "CL", RBOB: "RB", ULSD: "HO", HH: "NG", TTF: "TFM", DUBAI: "DBS" }[inst];
+  const prefix = { BRENT: "BRN", WTI: "CL", RBOB: "RB", ULSD: "HO", HH: "NG", TTF: "TFM", DUBAI: "DBS", JKM: "JKM" }[inst];
   return `${prefix}${MONTH_CODES[month - 1]}${String(year % 100).padStart(2, "0")}`;
 }
 export function monthLabel(key: string): string {

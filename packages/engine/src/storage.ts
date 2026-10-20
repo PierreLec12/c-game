@@ -4,7 +4,7 @@
  * monthly charge per barrel of leased capacity, in EUR at Rotterdam, and lands in the storage leg.
  */
 import { HOURS_PER_DAY } from "./calendar";
-import { ledger } from "./finance";
+import { ledger, markEur } from "./finance";
 import { GRADES, PORTS, QUALITY_GRID, STORAGE_TANKS, type Basis, type Grade } from "./world_data";
 import { basisParts, levelDayOf } from "./physical";
 import type { AttributionRow, Cargo, Parcel, State, Tank } from "./types";
@@ -26,6 +26,7 @@ export function chargeTanks(state: State): AttributionRow[] {
     if (t.released) continue;
     while (t.nextChargeTick <= state.tick) {
       const amount = t.capacityBbl * t.costPerBblMonth;
+      if (t.currency === "EUR") markEur(state);
       const usdAmount = t.currency === "EUR" ? amount * state.factors.eurusd : amount;
       ledger(state, "other", -amount, `Tank ${t.id} at ${PORTS[t.port].name}: month ${t.chargesPaid + 1} of ${t.months} at ${t.costPerBblMonth.toFixed(2)} ${t.currency}/bbl on ${t.capacityBbl.toLocaleString()} bbl`, t.currency);
       t.chargesPaid += 1;
@@ -152,6 +153,7 @@ export function releaseTank(state: State, tank: Tank): string | null {
     // the minimum term is paid out
     const left = tank.months - tank.chargesPaid;
     const amount = left * tank.capacityBbl * tank.costPerBblMonth;
+    if (tank.currency === "EUR") markEur(state);
     ledger(state, "other", -amount, `Tank ${tank.id}: ${left} month${left > 1 ? "s" : ""} of the minimum term paid out on release`, tank.currency);
     state.pnl.attribution.push({ tick: state.tick, inst: "WTI", month: tank.id, leg: "storage", amount: -(tank.currency === "EUR" ? amount * state.factors.eurusd : amount), text: `Tank ${tank.id} released early: the ${left}-month balance of the minimum term is paid out.` });
     tank.chargesPaid = tank.months;

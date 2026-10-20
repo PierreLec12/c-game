@@ -8,8 +8,11 @@ import { CHOKEPOINTS, type Stylised } from "./refdata";
 const S = <T>(value: T, basis: string, chosen = "2026-10-20"): Stylised<T> => ({ value, chosen, basis, stylised: true });
 
 export type VesselClass = "MR" | "LR2" | "AFRAMAX" | "SUEZMAX" | "VLCC" | "LNGC";
-export type Grade = "ARAB_LIGHT" | "BASRAH_MEDIUM" | "FORTIES" | "BONNY_LIGHT" | "WTI_MIDLAND" | "URALS" | "ES_SIDER";
-export type Basis = "DATED" | "BRENT" | "WTI" | "DUBAI";
+export type Grade = "ARAB_LIGHT" | "BASRAH_MEDIUM" | "FORTIES" | "BONNY_LIGHT" | "WTI_MIDLAND" | "URALS" | "ES_SIDER" | "LNG";
+/** A pricing basis: the crude benchmarks in $/bbl, and the gas hubs in $/MMBtu (TTF is converted from EUR/MWh at the day's EURUSD, so a TTF-priced cargo carries an FX leg). */
+export type Basis = "DATED" | "BRENT" | "WTI" | "DUBAI" | "HH" | "TTF" | "JKM";
+export const GAS_BASES: Basis[] = ["HH", "TTF", "JKM"];
+export const isGasBasis = (b: Basis): boolean => GAS_BASES.includes(b);
 
 export interface VesselClassSpec { cls: VesselClass; name: string; cargoKb: Stylised<number>; use: string; hireUsdPerDay: Stylised<number>; speedLaden: number; speedBallast: number; consumptionNote: string }
 export const VESSEL_CLASSES: Record<VesselClass, VesselClassSpec> = {
@@ -135,7 +138,12 @@ export const GRADES: Record<Grade, GradeSpec> = {
   WTI_MIDLAND: { id: "WTI_MIDLAND", name: "WTI Midland", api: 42, sulphur: 0.3, benchmark: "WTI", baseDiff: S(0.6, "light sweet export grade at a premium to WTI Cushing, stylised"), loadPorts: ["CORPUS_CHRISTI", "HOUSTON"], cargoKb: 600, cls: "AFRAMAX", naturalMarket: "ROTTERDAM" },
   URALS: { id: "URALS", name: "Urals", api: 31, sulphur: 1.5, benchmark: "DATED", baseDiff: S(-2.5, "a medium sour grade at a discount to Dated, stylised; no sanctions modelled"), loadPorts: ["PRIMORSK", "NOVOROSSIYSK"], cargoKb: 600, cls: "AFRAMAX", naturalMarket: "JAMNAGAR" },
   ES_SIDER: { id: "ES_SIDER", name: "Es Sider", api: 37, sulphur: 0.4, benchmark: "DATED", baseDiff: S(-0.6, "a light sweet Med grade, stylised"), loadPorts: ["ES_SIDER"], cargoKb: 1000, cls: "SUEZMAX", naturalMarket: "ROTTERDAM" },
+  LNG: { id: "LNG", name: "LNG", api: 0, sulphur: 0, benchmark: "HH", baseDiff: S(2.5, "FOB US LNG prices at Henry Hub plus a stylised $2.50/MMBtu liquefaction fee; quantities are in MMBtu, not barrels"), loadPorts: ["SABINE_PASS", "FREEPORT"], cargoKb: 3600, cls: "LNGC", naturalMarket: "GATE" },
 };
+/** The unit a cargo of this grade is counted and priced in. */
+export const unitOfGrade = (g: Grade): "bbl" | "MMBtu" => (g === "LNG" ? "MMBtu" : "bbl");
+/** The market an LNG cargo delivered at this terminal prices against. */
+export const lngMarketAt = (port: string): Basis => (port === "SODEGAURA" ? "JKM" : "TTF");
 export const QUALITY_GRID = {
   usdPerApi: S(0.12, "$/bbl per degree API around 38 (stylised quality grid)"),
   usdPerSulphurPct: S(2.0, "$/bbl per percentage point of sulphur around 0.5% (stylised); tightens when fuel oil weakens"),
@@ -143,7 +151,7 @@ export const QUALITY_GRID = {
 };
 
 /** The named counterparties (section 4). Ratings move with events; memory of a dispute arrives in milestone 3. */
-export type CpType = "producer" | "refiner" | "trader" | "shipowner" | "bank" | "inspector";
+export type CpType = "producer" | "refiner" | "trader" | "shipowner" | "bank" | "inspector" | "utility";
 export interface CounterpartySpec { id: string; name: string; type: CpType; rating: string; profile: string; diffEdge: number; lateDays: number; flaky: number; region: string; grades?: Grade[]; ports?: string[] }
 export const COUNTERPARTIES: Record<string, CounterpartySpec> = {
   GULF_NATIONAL: { id: "GULF_NATIONAL", name: "Gulf National Oil", type: "producer", rating: "AA", profile: "national producer; term cargoes, firm differentials", diffEdge: 0.1, lateDays: 0, flaky: 0, region: "GULF", grades: ["ARAB_LIGHT", "BASRAH_MEDIUM"], ports: ["RAS_TANURA", "BASRAH"] },
@@ -162,6 +170,9 @@ export const COUNTERPARTIES: Record<string, CounterpartySpec> = {
   NORDBANK: { id: "NORDBANK", name: "Nordbank", type: "bank", rating: "AA", profile: "the house bank: the line and letters of credit", diffEdge: 0, lateDays: 0, flaky: 0, region: "NSEA" },
   CRESCENT_BANK: { id: "CRESCENT_BANK", name: "Crescent Bank", type: "bank", rating: "A", profile: "a second bank; tighter covenants", diffEdge: 0, lateDays: 0, flaky: 0, region: "GULF" },
   VERITAS: { id: "VERITAS", name: "Veritas Marine Surveys", type: "inspector", rating: "A", profile: "the independent inspector; quality and quantity at load and discharge", diffEdge: 0, lateDays: 0, flaky: 0, region: "GLOBAL" },
+  GULF_LNG: { id: "GULF_LNG", name: "Gulf Coast LNG", type: "producer", rating: "A", profile: "US liquefaction plant; sells FOB Sabine Pass at Henry Hub plus a tolling fee", diffEdge: 0.05, lateDays: 0, flaky: 0, region: "USGC", grades: ["LNG"], ports: ["SABINE_PASS", "FREEPORT"] },
+  NORTHGAS: { id: "NORTHGAS", name: "Northgas Utility", type: "utility", rating: "AA", profile: "European utility; bids DES Gate on TTF, pays in euros", diffEdge: 0.05, lateDays: 0, flaky: 0, region: "NSEA", ports: ["GATE", "ZEEBRUGGE"] },
+  SAKURA_POWER: { id: "SAKURA_POWER", name: "Sakura Power", type: "utility", rating: "AA", profile: "Japanese utility; bids DES Sodegaura on JKM", diffEdge: 0.05, lateDays: 0, flaky: 0, region: "ASIA", ports: ["SODEGAURA"] },
 };
 
 /** The named fleet, placed at ports at the start of every level. */

@@ -117,8 +117,9 @@ export function charterQuotes(state: State, cargo: Cargo): CharterQuote[] {
   for (const v of state.vessels) {
     if (v.status !== "available") continue;
     const cap = VESSEL_CLASSES[v.cls].cargoKb.value * 1000;
-    const fitsSize = cap >= cargo.bbl && cap <= cargo.bbl * 2.5;
-    const fitsDraft = classAtMost(v.cls, load.maxClass) && classAtMost(v.cls, disc.maxClass) && v.cls !== "LNGC";
+    const lng = cargo.grade === "LNG";
+    const fitsSize = lng ? v.cls === "LNGC" : cap >= cargo.bbl && cap <= cargo.bbl * 2.5 && v.cls !== "LNGC";
+    const fitsDraft = classAtMost(v.cls, load.maxClass) && classAtMost(v.cls, disc.maxClass) && (lng || v.cls !== "LNGC");
     const ballast = shortestPath(v.node, load.node, blocked);
     const laden = shortestPath(load.node, disc.node, blocked);
     if (!ballast || !laden) continue;
@@ -130,7 +131,7 @@ export function charterQuotes(state: State, cargo: Cargo): CharterQuote[] {
     const lump = hire * (1 + SHIPPING.charterMarginShare.value) * (ballastDays + ladenDays + portDays);
     const etaLoadDay = Math.ceil((state.tick + ballastDays * 24) / 24);
     const fits = fitsSize && fitsDraft;
-    const why = `${owner.name}: hire $${Math.round(hire).toLocaleString()}/day (base ${VESSEL_CLASSES[v.cls].name} hire x freight index ${state.factors.freightIndex.toFixed(2)} x owner ${owner.diffEdge >= 0 ? "+" : ""}${Math.round(owner.diffEdge * 100)}%), ${ballastDays.toFixed(1)} days ballast + ${ladenDays.toFixed(1)} laden + ${portDays} port days, plus an ${Math.round(SHIPPING.charterMarginShare.value * 100)}% margin = $${Math.round(lump).toLocaleString()} lump sum, $${(lump / cargo.bbl).toFixed(2)}/bbl (stylised).${fits ? "" : !fitsSize ? " Wrong size for this cargo." : " Draft: this class cannot berth at both ports."}`;
+    const why = `${owner.name}: hire $${Math.round(hire).toLocaleString()}/day (base ${VESSEL_CLASSES[v.cls].name} hire x freight index ${state.factors.freightIndex.toFixed(2)} x owner ${owner.diffEdge >= 0 ? "+" : ""}${Math.round(owner.diffEdge * 100)}%), ${ballastDays.toFixed(1)} days ballast + ${ladenDays.toFixed(1)} laden + ${portDays} port days, plus an ${Math.round(SHIPPING.charterMarginShare.value * 100)}% margin = $${Math.round(lump).toLocaleString()} lump sum, $${(lump / cargo.bbl).toFixed(lng ? 3 : 2)}/${lng ? "MMBtu" : "bbl"} (stylised).${fits ? "" : !fitsSize ? (lng ? " Only an LNG carrier can carry LNG." : " Wrong size for this cargo.") : " Draft: this class cannot berth at both ports."}`;
     out.push({ vesselId: v.id, vessel: v.name, owner: owner.name, cls: v.cls, hireUsdPerDay: hire, ballastDays, ladenDays, portDays, lumpUsd: lump, usdPerBbl: lump / cargo.bbl, etaLoadDay, fits, why, path: laden.path });
   }
   return out.sort((a, b) => Number(b.fits) - Number(a.fits) || a.lumpUsd - b.lumpUsd);
@@ -142,7 +143,7 @@ export function expectedFreightUsd(state: State, cargo: Cargo): number {
   if (quotes.length) return quotes[0].lumpUsd;
   const load = PORTS[cargo.loadPort], disc = PORTS[cargo.dischargePort];
   const laden = shortestPath(load.node, disc.node, blockedNodes(state));
-  const cls = (["AFRAMAX", "SUEZMAX", "VLCC"] as VesselClass[]).find((c) => VESSEL_CLASSES[c].cargoKb.value * 1000 >= cargo.bbl) ?? "VLCC";
+  const cls = cargo.grade === "LNG" ? "LNGC" : (["AFRAMAX", "SUEZMAX", "VLCC"] as VesselClass[]).find((c) => VESSEL_CLASSES[c].cargoKb.value * 1000 >= cargo.bbl) ?? "VLCC";
   const days = laden ? daysFor(laden.nm, speedKn(cls, true, 1)) : 20;
   return hireNow(state, cls) * (1 + SHIPPING.charterMarginShare.value) * (days + SHIPPING.portDaysInCharter.value + 3);
 }

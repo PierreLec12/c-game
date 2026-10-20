@@ -2,7 +2,8 @@
  * Cash, the credit line, margin and financing (section 7). Every movement of cash is a ledger row,
  * so cash is always the sum of its ledger (tested as an invariant).
  */
-import { FINANCE, INSTRUMENTS, INTER_COMMODITY_OFFSET, MAINTENANCE_MARGIN_SHARE, SPREAD_MARGIN_OFFSET, type InstrumentId } from "./refdata";
+import { FINANCE, INSTRUMENTS, INTER_COMMODITY_OFFSET, MAINTENANCE_MARGIN_SHARE, OPTIONS, SPREAD_MARGIN_OFFSET, type InstrumentId } from "./refdata";
+import { optionInputs, optionValue } from "./optionbook";
 import { CREDIT, GRADES } from "./world_data";
 import type { Cargo, EngineEvent, LetterOfCredit } from "./types";
 import type { FinanceState, LedgerKind, State } from "./types";
@@ -36,9 +37,22 @@ export function marginRequired(state: State): MarginBreakdown {
   const by: MarginBreakdown["byInstrument"] = {};
   const net: Partial<Record<InstrumentId, number>> = {};
   let total = 0;
+  let optionsIm = 0;
+  const optionNotes: string[] = [];
   for (const lot of state.lots) {
     const spec = INSTRUMENTS[lot.inst];
     const q = state.quotes[ckey(lot.inst, lot.month)];
+    if (lot.option) {
+      // an option is margined on its delta-equivalent notional, with a floor on short options (stylised)
+      const inp = optionInputs(state, lot.inst, lot.month, lot.option.strike, lot.option.expiryTick);
+      const v = optionValue(lot.option.kind, lot.option.strike, inp, lot.option.expiryTick <= state.tick);
+      const d = Math.abs(v.greeks?.delta ?? (lot.option.kind === "call" ? (inp.F > lot.option.strike ? 1 : 0) : (inp.F < lot.option.strike ? 1 : 0)));
+      const share = lot.qty < 0 ? Math.max(d, OPTIONS.shortMarginDeltaFloor.value) : d;
+      const im = spec.initialMarginShare.value * inp.F * lotValueUsd(state, lot.inst) * Math.abs(lot.qty) * share;
+      optionsIm += im;
+      optionNotes.push(`${Math.abs(lot.qty)} ${lot.option.strike} ${lot.option.kind}${lot.qty < 0 ? " short" : ""} at delta ${d.toFixed(2)}${lot.qty < 0 && d < OPTIONS.shortMarginDeltaFloor.value ? ` (floor ${OPTIONS.shortMarginDeltaFloor.value})` : ""}: $${Math.round(im).toLocaleString()}`);
+      continue;
+    }
     const price = q ? q.mid : lot.lastMark;
     const row = by[lot.inst] ?? (by[lot.inst] = { gross: 0, net: 0, rate: spec.initialMarginShare.value, price, im: 0 });
     row.gross += Math.abs(lot.qty);
@@ -68,8 +82,8 @@ export function marginRequired(state: State): MarginBreakdown {
       remaining[b] = y - Math.sign(y) * paired;
     }
   }
-  total = Math.max(0, total - offsets);
-  const why = Object.entries(by).map(([i, r]) => `${i}: ${r.rate * 100}% of ${r.gross} lots at ${r.price.toFixed(INSTRUMENTS[i as InstrumentId].decimals)} = $${Math.round(r.im).toLocaleString()}`).join("; ") + (offsets > 0 ? `; inter-commodity offsets -$${Math.round(offsets).toLocaleString()}` : "");
+  total = Math.max(0, total - offsets) + optionsIm;
+  const why = [Object.entries(by).map(([i, r]) => `${i}: ${r.rate * 100}% of ${r.gross} lots at ${r.price.toFixed(INSTRUMENTS[i as InstrumentId].decimals)} = $${Math.round(r.im).toLocaleString()}`).join("; ") + (offsets > 0 ? `; inter-commodity offsets -$${Math.round(offsets).toLocaleString()}` : ""), optionNotes.length ? `options on their delta-equivalent notional: ${optionNotes.join(", ")}` : ""].filter(Boolean).join("; ");
   return { total, byInstrument: by, offsets, why: why || "no open positions" };
 }
 

@@ -338,6 +338,102 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
       return moveRating(state, str(ev.params.counterparty, "ADRIATIC_SMALL"), num(ev.params.delta, -15), str(ev.params.body, "An agency moved the rating."));
     },
   },
+
+  // ---------------------------------------------------------------- milestone 4: products, gas, options, signals
+  hurricane: {
+    kind: "hurricane", title: "Gulf of Mexico hurricane", card: "turnaround_is_supply",
+    fire(state, ev) {
+      const days = num(ev.params.days, 5);
+      const hours = days * 24;
+      state.factors = { ...state.factors, gasolineCrack: state.factors.gasolineCrack + num(ev.params.gasoline, 4), dieselCrack: state.factors.dieselCrack + num(ev.params.diesel, 2) };
+      jumpBrent(state, -num(ev.params.crudePct, 0.02));
+      state.world = applyWorldShock(state.world, { eventIntensity: 0.6, usInvGap: 3 }, { refineryRuns: state.world.targets.refineryRuns - num(ev.params.runs, 0.08) });
+      for (const port of ["HOUSTON", "CORPUS_CHRISTI", "SABINE_PASS", "FREEPORT", "ST_JAMES"]) state.portCongestion[port] = Math.max(state.portCongestion[port] ?? 0, state.tick + hours);
+      if (state.refinery && ev.params.shutsPlant !== false) state.refinery.shutUntil = state.tick + hours;
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `Hurricane makes landfall on the Gulf Coast: refineries shut, ports closed for ${days} days`), body: str(ev.params.body, `Gulf Coast refineries are down and the ports are closed. Gasoline and diesel cracks jump; crude backs up and the prompt softens.${state.refinery ? " Your plant is shut: no runs, fixed costs still paid, and any crack hedge you carry is now a naked short crack." : ""}`), eventId: ev.id });
+      return [{ kind: "refinery", tick: state.tick, text: n.headline, pause: true, data: { days } }];
+    },
+  },
+  hurricane_end: {
+    kind: "hurricane_end", title: "Gulf Coast restarts",
+    fire(state, ev) {
+      state.world = applyWorldShock(state.world, {}, { refineryRuns: state.world.targets.refineryRuns + num(ev.params.runs, 0.08) });
+      const n = publishNews(state, { source: "wire", headline: "Gulf Coast refineries restarting; ports reopen", body: "Runs come back over the week; the crack premium fades." + (state.refinery ? " Your plant restarts at its set run rate." : ""), eventId: ev.id });
+      return [{ kind: "refinery", tick: state.tick, text: n.headline, pause: false }];
+    },
+  },
+  plant_maintenance: {
+    kind: "plant_maintenance", title: "Turnaround at your plant", card: "turnaround_is_supply",
+    fire(state, ev) {
+      const days = num(ev.params.days, 7);
+      if (state.refinery) state.refinery.maintenanceUntil = state.tick + days * 24;
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `Your plant: ${days}-day turnaround on the cracker; runs capped at 50%`), body: str(ev.params.body, "Maintenance that was always in the plan. Half the crude runs for the duration: half the margin, the same fixed cost, and a crack hedge sized for full runs is now twice too big."), eventId: ev.id });
+      return [{ kind: "refinery", tick: state.tick, text: n.headline, pause: true, data: { days } }];
+    },
+  },
+  vol_spike: {
+    kind: "vol_spike", title: "Vol spike", card: "vol_is_a_price",
+    fire(state, ev) {
+      state.world = applyWorldShock(state.world, { eventIntensity: num(ev.params.intensity, 0.9), geo: num(ev.params.geo, 0.1) });
+      jumpBrent(state, num(ev.params.pct, -0.015));
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, "Implied vol jumps: options reprice across the curve"), body: str(ev.params.body, "The surface moves up by a third in an hour and the regime turns stressed: depth halves. Long options earn on vega, short options bleed; every delta hedge is wrong by the gamma until it is reset."), eventId: ev.id });
+      return [{ kind: "option", tick: state.tick, text: n.headline, pause: true }];
+    },
+  },
+  cold_snap: {
+    kind: "cold_snap", title: "Cold snap in Europe", card: "storage_is_the_gas_curve",
+    fire(state, ev) {
+      const hdd = num(ev.params.hdd, 6);
+      const days = num(ev.params.days, 7);
+      state.world = applyWorldShock(state.world, { hddEu: hdd, eventIntensity: 0.3 }, { hddEu: state.world.targets.hddEu + hdd });
+      state.factors = { ...state.factors, ttfPrompt: state.factors.ttfPrompt * Math.exp(num(ev.params.pct, 0.08)) };
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `Cold snap settles over north-west Europe for ${days} days`), body: str(ev.params.body, `Heating demand runs ${hdd} degree-days above normal; storage drains faster and TTF jumps. The Asian premium narrows as European prices catch up with JKM.`), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true, data: { hdd, days } }];
+    },
+  },
+  cold_snap_end: {
+    kind: "cold_snap_end", title: "Cold snap ends",
+    fire(state, ev) {
+      state.world = applyWorldShock(state.world, {}, { hddEu: state.world.targets.hddEu - num(ev.params.hdd, 6) });
+      const n = publishNews(state, { source: "wire", headline: "Temperatures back to normal", body: "The draw slows; the prompt premium fades.", eventId: ev.id });
+      return [{ kind: "news", tick: state.tick, text: n.headline, pause: false }];
+    },
+  },
+  refinery_fire: {
+    kind: "refinery_fire", title: "Refinery fire", card: "lags",
+    fire(state, ev) {
+      const days = num(ev.params.days, 10);
+      state.factors = { ...state.factors, dieselCrack: state.factors.dieselCrack + num(ev.params.diesel, 2.5), gasolineCrack: state.factors.gasolineCrack + num(ev.params.gasoline, 1.2), gradeDiffs: { ...state.factors.gradeDiffs, BASRAH_MEDIUM: state.factors.gradeDiffs.BASRAH_MEDIUM - 0.4, ARAB_LIGHT: state.factors.gradeDiffs.ARAB_LIGHT - 0.3 } };
+      state.world = applyWorldShock(state.world, { eventIntensity: 0.35 }, { refineryRuns: state.world.targets.refineryRuns - num(ev.params.runs, 0.03) });
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, "Fire at the Jamnagar complex; a crude unit down for weeks"), body: str(ev.params.body, `The world's largest refinery loses a crude unit for about ${days} days. Diesel exports fall and the diesel crack jumps; the sour crude it would have run is cheaper.`), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true, data: { days } }];
+    },
+  },
+  refinery_fire_end: {
+    kind: "refinery_fire_end", title: "Refinery restarts",
+    fire(state, ev) {
+      state.world = applyWorldShock(state.world, {}, { refineryRuns: state.world.targets.refineryRuns + num(ev.params.runs, 0.03) });
+      const n = publishNews(state, { source: "wire", headline: "Jamnagar crude unit restarts", body: "Diesel exports resume; the crack premium fades.", eventId: ev.id });
+      return [{ kind: "news", tick: state.tick, text: n.headline, pause: false }];
+    },
+  },
+  gas_storage_release: {
+    kind: "gas_storage_release", title: "Weekly US gas storage", card: "expected_vs_actual",
+    fire(state, ev, s) {
+      const rel = state.releases.find((r) => r.id === ev.id);
+      // the true weekly change: the seasonal injection or withdrawal less the heating anomaly, plus survey noise (bcf)
+      const seasonal = state.world.targets.usGasGap >= 0 ? 60 : 40;
+      const trueChange = seasonal - 6 * state.world.hddAnomaly.us + s.normal() * 12;
+      const consensus = rel?.consensus?.v ?? seasonal;
+      const actual = Math.round(trueChange);
+      const surprise = actual - consensus;
+      state.factors = { ...state.factors, hhPrompt: state.factors.hhPrompt * Math.exp(-FACTORS.hhPerBcfGap.value * surprise * 2) };
+      state.world = applyWorldShock(state.world, { gasUs: surprise, eventIntensity: 0.1 });
+      if (rel) { rel.actual = { v: actual, at: state.tick, why: "Weekly US gas storage change: the seasonal flow less the heating anomaly, plus survey noise." }; rel.published = true; }
+      const n = publishNews(state, { source: "release", headline: `Gas storage ${actual >= 0 ? "+" : ""}${actual} bcf versus ${consensus >= 0 ? "+" : ""}${Math.round(consensus)} expected`, body: `An injection of ${actual} bcf against ${Math.round(consensus)} expected: a ${Math.abs(surprise).toFixed(0)} bcf ${surprise > 0 ? "bearish" : "bullish"} surprise for Henry Hub.`, eventId: ev.id });
+      return [{ kind: "release", tick: state.tick, text: n.headline, pause: true, data: { actual, consensus, surprise } }];
+    },
+  },
 };
 
 /** Build the scheduled list from a level's schedule: leaks are added a day before meetings; turnarounds get an end. */
@@ -370,13 +466,16 @@ export function scheduleEvents(entries: { id?: string; kind: string; day: number
       const days = typeof params.days === "number" ? params.days : 10;
       out.push({ id: `${id}:end`, kind: "turnaround_end", tick: tick + days * 24, fired: false, params: { runs: -(typeof params.runs === "number" ? params.runs : -0.08) } });
     }
+    if (e.kind === "hurricane") out.push({ id: `${id}:end`, kind: "hurricane_end", tick: tick + (typeof params.days === "number" ? params.days : 5) * 24, fired: false, params: { runs: typeof params.runs === "number" ? params.runs : 0.08 } });
+    if (e.kind === "cold_snap") out.push({ id: `${id}:end`, kind: "cold_snap_end", tick: tick + (typeof params.days === "number" ? params.days : 7) * 24, fired: false, params: { hdd: typeof params.hdd === "number" ? params.hdd : 6 } });
+    if (e.kind === "refinery_fire") out.push({ id: `${id}:end`, kind: "refinery_fire_end", tick: tick + (typeof params.days === "number" ? params.days : 10) * 24, fired: false, params: { runs: typeof params.runs === "number" ? params.runs : 0.03 } });
     out.push({ id, kind: e.kind, tick, fired: false, params });
   });
   return out.sort((a, b) => a.tick - b.tick);
 }
 
 /** Fire every event due at the current tick. */
-const DELAYABLE = new Set(["field_outage", "tanker_seizure", "chokepoint", "port_strike", "port_congestion", "grade_diff_shock", "freight_shock", "balance_shift", "inventory_shock", "geo_scare", "refinery_turnaround", "counterparty_default", "counterparty_vanish"]);
+const DELAYABLE = new Set(["field_outage", "tanker_seizure", "chokepoint", "port_strike", "port_congestion", "grade_diff_shock", "freight_shock", "balance_shift", "inventory_shock", "geo_scare", "refinery_turnaround", "counterparty_default", "counterparty_vanish", "cold_snap", "refinery_fire", "hurricane"]);
 
 export function fireDue(state: State, s: Stream): EngineEvent[] {
   const events: EngineEvent[] = [];
@@ -389,6 +488,7 @@ export function fireDue(state: State, s: Stream): EngineEvent[] {
     state.pendingNewsDelay = delay;
     const fired = def.fire(state, ev, s);
     state.pendingNewsDelay = 0;
+    for (const sig of state.signals) if (sig.eventId === ev.id) sig.headlineTick = state.tick + delay;
     if (typeof ev.params.confirms === "string") {
       const item = state.news.find((n) => n.eventId === ev.params.confirms);
       if (item) resolve(state, item.id, "true", "Confirmed: the rumour was right.");

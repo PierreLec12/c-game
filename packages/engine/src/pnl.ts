@@ -10,6 +10,7 @@ import { priceParts } from "./markets";
 import { ckey } from "./liquidity";
 import { lotValueUsd, markEur } from "./finance";
 import type { AttributionLeg, AttributionRow, Fill, Lot, State } from "./types";
+import { attributeOptionLot, lotKey, optionExpiryTick, optionInputs, optionValue } from "./optionbook";
 
 export function tauOf(state: State, inst: InstrumentId, month: string): number {
   const c = state.contracts[ckey(inst, month)];
@@ -67,16 +68,27 @@ export function settleLots(state: State, settlePrices: Record<string, number>): 
   const fx = state.factors.eurusd;
   for (const lot of state.lots) {
     const key = ckey(lot.inst, lot.month);
-    const price = settlePrices[key];
-    if (price === undefined) continue;
-    const parts = partsNow(state, lot.inst, lot.month);
-    rows.push(...attributeLot(state, lot, lot.qty, price, parts, fx));
+    const futPrice = settlePrices[key];
+    if (futPrice === undefined) continue;
     const spec = INSTRUMENTS[lot.inst];
+    let price: number;
+    if (lot.option) {
+      // an option settles at its model value off the future's settle; at its own expiry, at intrinsic value
+      const atExpiry = lot.option.expiryTick <= state.tick;
+      const inp = optionInputs(state, lot.inst, lot.month, lot.option.strike, lot.option.expiryTick, futPrice);
+      price = optionValue(lot.option.kind, lot.option.strike, inp, atExpiry).price;
+      rows.push(...attributeOptionLot(state, lot, lot.qty, price, inp, atExpiry));
+      lot.option.base = inp;
+    } else {
+      price = futPrice;
+      const parts = partsNow(state, lot.inst, lot.month);
+      rows.push(...attributeLot(state, lot, lot.qty, price, parts, fx));
+      lot.base = parts;
+    }
     const vm = (price - lot.lastMark) * lot.qty * spec.lot;
     if (spec.currency === "EUR") vmEur += vm;
     else vmUsd += vm;
     lot.lastMark = price;
-    lot.base = parts;
     lot.baseFx = fx;
   }
   return { rows: aggregate(rows), vmUsd, vmEur };
@@ -86,7 +98,7 @@ export function settleLots(state: State, settlePrices: Record<string, number>): 
 export function aggregate(rows: AttributionRow[]): AttributionRow[] {
   const map = new Map<string, AttributionRow>();
   for (const r of rows) {
-    const k = `${r.tick}|${r.inst}|${r.month}|${r.leg}|${r.packageId ?? ""}`;
+    const k = `${r.tick}|${r.inst}|${r.month}|${r.leg}|${r.greek ?? ""}|${r.packageId ?? ""}`;
     const prev = map.get(k);
     if (prev) prev.amount += r.amount;
     else map.set(k, { ...r, lotId: undefined });
@@ -104,12 +116,15 @@ export function applyFillToLots(state: State, fill: Fill): { realised: number; r
   const fx = state.factors.eurusd;
   const parts = partsNow(state, fill.inst, fill.month);
   const lotUsd = lotValueUsd(state, fill.inst);
+  const fillKey = fill.option ? `${fill.inst}:${fill.month}:${fill.option.kind}:${fill.option.strike}` : ckey(fill.inst, fill.month);
+  const optInputs = fill.option ? optionInputs(state, fill.inst, fill.month, fill.option.strike) : null;
   const keep: Lot[] = [];
   for (const lot of state.lots) {
-    if (remaining > 0 && lot.inst === fill.inst && lot.month === fill.month && Math.sign(lot.qty) === -sign) {
+    if (remaining > 0 && lotKey(lot) === fillKey && Math.sign(lot.qty) === -sign) {
       const closeQty = Math.min(remaining, Math.abs(lot.qty));
       const closedSigned = -sign * closeQty; // the lot's own sign
-      rows.push(...attributeLot(state, lot, closedSigned, fill.price, parts, fx));
+      if (lot.option && optInputs) rows.push(...attributeOptionLot(state, lot, closedSigned, fill.price, optInputs, false));
+      else rows.push(...attributeLot(state, lot, closedSigned, fill.price, parts, fx));
       const pnl = (fill.price - lot.lastMark) * closedSigned * lotUsd;
       if (spec.currency === "EUR") {
         // EUR P&L settles into the EUR cash account; book it now in EUR, after revaluing the balance already there
@@ -118,7 +133,7 @@ export function applyFillToLots(state: State, fill: Fill): { realised: number; r
         state.finance.ledger.push({ id: `l${++state.counters.ledger}`, tick: state.tick, kind: "variation_margin", amount: pnl / fx, currency: "EUR", text: `Closed ${closeQty} lots of ${fill.inst} ${monthLabel(fill.month)} at ${fill.price.toFixed(spec.decimals)}` });
       } else {
         state.finance.cashUSD += pnl;
-        state.finance.ledger.push({ id: `l${++state.counters.ledger}`, tick: state.tick, kind: "variation_margin", amount: pnl, currency: "USD", text: `Closed ${closeQty} lots of ${fill.inst} ${monthLabel(fill.month)} at ${fill.price.toFixed(spec.decimals)}: ${usd(pnl)} realised` });
+        state.finance.ledger.push({ id: `l${++state.counters.ledger}`, tick: state.tick, kind: "variation_margin", amount: pnl, currency: "USD", text: `Closed ${closeQty} lots of ${fill.inst} ${monthLabel(fill.month)}${fill.option ? ` ${fill.option.strike} ${fill.option.kind}` : ""} at ${fill.price.toFixed(spec.decimals)}: ${usd(pnl)} realised` });
       }
       realised += pnl;
       remaining -= closeQty;
@@ -128,10 +143,12 @@ export function applyFillToLots(state: State, fill: Fill): { realised: number; r
   }
   state.lots = keep;
   if (remaining > 0) {
-    state.lots.push({
+    const lot: Lot = {
       id: `L${++state.counters.lot}`, inst: fill.inst, month: fill.month, qty: sign * remaining, entry: fill.price, openedTick: state.tick,
       tag: fill.tag, packageId: fill.packageId, base: parts, baseFx: fx, lastMark: fill.price,
-    });
+    };
+    if (fill.option && optInputs) lot.option = { kind: fill.option.kind, strike: fill.option.strike, expiryTick: optionExpiryTick(state, fill.inst, fill.month), base: optInputs };
+    state.lots.push(lot);
   }
   state.pnl.realised += realised;
   return { realised, rows: aggregate(rows) };
@@ -143,32 +160,34 @@ export function unrealised(state: State): number {
   for (const lot of state.lots) {
     const q = state.quotes[ckey(lot.inst, lot.month)];
     if (!q) continue;
-    u += (q.mid - lot.lastMark) * lot.qty * lotValueUsd(state, lot.inst);
+    const mark = lot.option ? optionValue(lot.option.kind, lot.option.strike, optionInputs(state, lot.inst, lot.month, lot.option.strike, lot.option.expiryTick), lot.option.expiryTick <= state.tick).price : q.mid;
+    u += (mark - lot.lastMark) * lot.qty * lotValueUsd(state, lot.inst);
   }
   return u;
 }
 
 export function netLots(state: State): Record<InstrumentId, number> {
-  const out = { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0 } as Record<InstrumentId, number>;
-  for (const lot of state.lots) out[lot.inst] += lot.qty;
+  const out = { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0, JKM: 0 } as Record<InstrumentId, number>;
+  for (const lot of state.lots) if (!lot.option) out[lot.inst] += lot.qty;
   return out;
 }
 export function grossLots(state: State): number {
-  return state.lots.reduce((a, l) => a + Math.abs(l.qty), 0);
+  return state.lots.filter((l) => !l.option).reduce((a, l) => a + Math.abs(l.qty), 0);
 }
 
 /** Positions by contract, aggregated from the lots, with an average entry. */
-export interface PositionRow { inst: InstrumentId; month: string; qty: number; avgEntry: number; lastMark: number; mid: number | null; unrealised: number; tags: string[]; lotIds: string[] }
+export interface PositionRow { inst: InstrumentId; month: string; qty: number; avgEntry: number; lastMark: number; mid: number | null; unrealised: number; tags: string[]; lotIds: string[]; option?: { kind: "call" | "put"; strike: number; expiryTick: number } }
 export function positions(state: State): PositionRow[] {
   const map = new Map<string, PositionRow>();
   for (const lot of state.lots) {
-    const k = ckey(lot.inst, lot.month);
-    const q = state.quotes[k];
-    const row = map.get(k) ?? { inst: lot.inst, month: lot.month, qty: 0, avgEntry: 0, lastMark: lot.lastMark, mid: q ? q.mid : null, unrealised: 0, tags: [], lotIds: [] };
+    const k = lotKey(lot);
+    const q = state.quotes[ckey(lot.inst, lot.month)];
+    const mark = lot.option ? optionValue(lot.option.kind, lot.option.strike, optionInputs(state, lot.inst, lot.month, lot.option.strike, lot.option.expiryTick), lot.option.expiryTick <= state.tick).price : q ? q.mid : null;
+    const row = map.get(k) ?? { inst: lot.inst, month: lot.month, qty: 0, avgEntry: 0, lastMark: lot.lastMark, mid: mark, unrealised: 0, tags: [], lotIds: [], option: lot.option ? { kind: lot.option.kind, strike: lot.option.strike, expiryTick: lot.option.expiryTick } : undefined };
     const newQty = row.qty + lot.qty;
     row.avgEntry = newQty !== 0 ? (row.avgEntry * row.qty + lot.entry * lot.qty) / newQty : 0;
     row.qty = newQty;
-    row.unrealised += q ? (q.mid - lot.lastMark) * lot.qty * lotValueUsd(state, lot.inst) : 0;
+    row.unrealised += mark !== null ? (mark - lot.lastMark) * lot.qty * lotValueUsd(state, lot.inst) : 0;
     if (!row.tags.includes(lot.tag)) row.tags.push(lot.tag);
     row.lotIds.push(lot.id);
     map.set(k, row);
@@ -177,7 +196,7 @@ export function positions(state: State): PositionRow[] {
 }
 
 export function attributionTotals(rows: AttributionRow[]): Record<AttributionLeg, number> {
-  const out: Record<AttributionLeg, number> = { flat: 0, basis: 0, time_spread: 0, crack: 0, fees_slippage: 0, fx: 0, finance: 0, options: 0, freight: 0, demurrage: 0, storage: 0, quality: 0, credit: 0 };
+  const out: Record<AttributionLeg, number> = { flat: 0, basis: 0, time_spread: 0, crack: 0, fees_slippage: 0, fx: 0, finance: 0, options: 0, freight: 0, demurrage: 0, storage: 0, quality: 0, credit: 0, refinery: 0 };
   for (const r of rows) out[r.leg] += r.amount;
   return out;
 }
@@ -185,5 +204,5 @@ export function attributionTotals(rows: AttributionRow[]): Record<AttributionLeg
 /** The exchange and clearing fee of a fill as an attribution row, so the legs still sum to the book. */
 export function feeRow(state: State, fill: Fill): AttributionRow {
   const spec = INSTRUMENTS[fill.inst];
-  return { tick: state.tick, inst: fill.inst, month: fill.month, leg: "fees_slippage", amount: -fill.fees, text: `Exchange and clearing fees: ${fill.qty} lots of ${spec.name} ${monthLabel(fill.month)} at $${spec.fee.value.toFixed(2)} a lot.` };
+  return { tick: state.tick, inst: fill.inst, month: fill.month, leg: "fees_slippage", amount: -fill.fees, text: `Exchange and clearing fees: ${fill.qty} lots of ${spec.name} ${monthLabel(fill.month)}${fill.option ? ` ${fill.option.strike} ${fill.option.kind}` : ""} at $${spec.fee.value.toFixed(2)} a lot.` };
 }

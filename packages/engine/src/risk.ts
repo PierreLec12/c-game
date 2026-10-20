@@ -11,6 +11,7 @@ import { physicalExposureBbl } from "./physical";
 import { counterpartyExposure } from "./counterparties";
 import { COUNTERPARTIES } from "./world_data";
 import type { Fig, RiskLimits, State } from "./types";
+import { nakedShortOptions, optionInputs, optionValue } from "./optionbook";
 
 export interface VaRResult { level: number; loss: number; days: number; instruments: string[]; leftOut: string[]; worst: number }
 
@@ -64,27 +65,40 @@ export function contractCloses(state: State, keys?: string[]): Record<string, nu
 /** The book's one-day VaR by historical simulation on the simulated closes. */
 export function bookVar(state: State): Fig | null {
   const phys = physicalExposureBbl(state);
-  if (state.lots.length === 0 && Math.abs(phys.bbl) < 1) return { v: 0, at: state.tick, why: "No open positions and no unpriced physical exposure: VaR is zero." };
+  if (state.lots.length === 0 && Math.abs(phys.bbl) < 1 && !Object.values(phys.byBasis).some((v) => Math.abs(v ?? 0) >= 1)) return { v: 0, at: state.tick, why: "No open positions and no unpriced physical exposure: VaR is zero." };
   const exposure: Record<string, number> = {};
   const prices: Record<string, number> = {};
+  let optionNote = "";
   for (const lot of state.lots) {
     const k = ckey(lot.inst, lot.month);
-    exposure[k] = (exposure[k] ?? 0) + lot.qty * lotValueUsd(state, lot.inst);
     const q = state.quotes[k];
+    if (lot.option) {
+      // an option enters the simulation as its delta-equivalent lots of the future (gamma and vega are in the stress table)
+      const inp = optionInputs(state, lot.inst, lot.month, lot.option.strike, lot.option.expiryTick);
+      const d = optionValue(lot.option.kind, lot.option.strike, inp, lot.option.expiryTick <= state.tick).greeks?.delta ?? 0;
+      exposure[k] = (exposure[k] ?? 0) + lot.qty * d * lotValueUsd(state, lot.inst);
+      prices[k] = q ? q.mid : inp.F;
+      optionNote = " Options enter as their delta-equivalent lots.";
+      continue;
+    }
+    exposure[k] = (exposure[k] ?? 0) + lot.qty * lotValueUsd(state, lot.inst);
     prices[k] = q ? q.mid : lot.lastMark;
   }
-  if (Math.abs(phys.bbl) >= 1) {
-    // unpriced physical barrels behave like the front Brent contract for the simulation
-    const k = ckey("BRENT", state.listed.BRENT[0]);
-    exposure[k] = (exposure[k] ?? 0) + phys.bbl;
-    prices[k] = state.quotes[k]?.mid ?? state.factors.brentPrompt;
+  for (const [basis, units] of Object.entries(phys.byBasis)) {
+    if (Math.abs(units) < 1) continue;
+    // unpriced physical behaves like the front contract of its benchmark: crude bases on Brent, gas bases on their own hub
+    const inst: InstrumentId = basis === "HH" ? "HH" : basis === "TTF" ? "TTF" : basis === "JKM" ? "JKM" : "BRENT";
+    const k = ckey(inst, state.listed[inst][0]);
+    const lotUsd = lotValueUsd(state, inst) / INSTRUMENTS[inst].lot;
+    exposure[k] = (exposure[k] ?? 0) + units * lotUsd;
+    prices[k] = state.quotes[k]?.mid ?? (inst === "BRENT" ? state.factors.brentPrompt : inst === "HH" ? state.factors.hhPrompt : state.factors.ttfPrompt);
   }
   const closes = contractCloses(state, Object.keys(exposure));
   const res = historicalVar(exposure, prices, closes, [VAR.level.value], VAR.window.value);
   if (res.length === 0) return null;
   const r = res[0];
-  const keys = Object.keys(exposure).map((k) => `${k} (${Math.round(exposure[k] / INSTRUMENTS[k.split(":")[0] as InstrumentId].lot)} lots${Math.abs(phys.bbl) >= 1 && k.startsWith("BRENT") ? `, of which ${Math.round(phys.bbl / 1000)} lots of unpriced physical` : ""})`).join(", ");
-  return { v: r.loss, at: state.tick, why: `One-day 95% VaR by historical simulation: the loss not exceeded on 95% of the last ${r.days} simulated sessions, applying each session's return of every contract you hold to today's exposure (${keys}). Worst simulated day: $${Math.round(r.worst).toLocaleString()}.` };
+  const keys = Object.keys(exposure).map((k) => { const inst = k.split(":")[0] as InstrumentId; return `${k} (${Math.round(exposure[k] / lotValueUsd(state, inst))} lots${Math.abs(phys.bbl) >= 1 && k.startsWith("BRENT") ? `, of which ${Math.round(phys.bbl / 1000)} lots of unpriced physical` : ""})`; }).join(", ");
+  return { v: r.loss, at: state.tick, why: `One-day 95% VaR by historical simulation: the loss not exceeded on 95% of the last ${r.days} simulated sessions, applying each session's return of every contract you hold to today's exposure (${keys}).${optionNote} Worst simulated day: $${Math.round(r.worst).toLocaleString()}.` };
 }
 
 /** Full re-pricing of the book under price (and, once options exist, vol) shocks. */
@@ -93,6 +107,15 @@ export function stressTable(state: State): { priceShock: number; volShock: numbe
     let change = 0;
     for (const lot of state.lots) {
       const q = state.quotes[ckey(lot.inst, lot.month)];
+      if (lot.option) {
+        // full re-pricing: the future shocked by dp and the surface by dv vol points
+        const inp = optionInputs(state, lot.inst, lot.month, lot.option.strike, lot.option.expiryTick);
+        const atExp = lot.option.expiryTick <= state.tick;
+        const before = optionValue(lot.option.kind, lot.option.strike, inp, atExp).price;
+        const after = optionValue(lot.option.kind, lot.option.strike, { ...inp, F: inp.F * (1 + dp), sigma: Math.max(0.01, inp.sigma + dv) }, atExp).price;
+        change += (after - before) * lot.qty * lotValueUsd(state, lot.inst);
+        continue;
+      }
       const p = q ? q.mid : lot.lastMark;
       change += p * dp * lot.qty * lotValueUsd(state, lot.inst);
     }
@@ -116,6 +139,10 @@ export function breaches(state: State, levelPnl: number): LimitCheck[] {
   if (gross > L.grossLots) out.push({ limit: "grossLots", value: gross, limitValue: L.grossLots, text: `Gross ${gross} lots is above the ${L.grossLots}-lot limit` });
   if (levelPnl < -L.stopLoss) out.push({ limit: "stop_loss", value: -levelPnl, limitValue: L.stopLoss, text: `Level P&L ${usd(levelPnl)} is through the stop-loss of $${Math.round(L.stopLoss).toLocaleString()}` });
   if (state.risk.maxDrawdown > L.drawdown) out.push({ limit: "drawdown", value: state.risk.maxDrawdown, limitValue: L.drawdown, text: `Drawdown $${Math.round(state.risk.maxDrawdown).toLocaleString()} from the peak is above the $${Math.round(L.drawdown).toLocaleString()} limit` });
+  if (L.nakedShortOptions !== undefined) {
+    const naked = nakedShortOptions(state, coverLotsByInst(state));
+    if (naked.total > L.nakedShortOptions) out.push({ limit: "nakedShortOptions", value: naked.total, limitValue: L.nakedShortOptions, text: `${naked.total} short option lots are not covered by futures or physical, above the ${L.nakedShortOptions}-lot naked limit` });
+  }
   if (L.concentration < 50) {
     const cx = counterpartyExposure(state);
     let worst: { id: string; mult: number } | null = null;
@@ -127,6 +154,17 @@ export function breaches(state: State, levelPnl: number): LimitCheck[] {
 
 function usd(x: number): string { return (x < 0 ? "-$" : "$") + Math.abs(Math.round(x)).toLocaleString(); }
 
+/** What covers a short option, in lots per instrument: net futures plus net physical units of the instrument's benchmark. */
+export function coverLotsByInst(state: State): Record<InstrumentId, number> {
+  const net = netLots(state);
+  const phys = physicalExposureBbl(state);
+  for (const [basis, units] of Object.entries(phys.byBasis)) {
+    const inst: InstrumentId = basis === "HH" ? "HH" : basis === "TTF" ? "TTF" : basis === "JKM" ? "JKM" : basis === "WTI" ? "WTI" : basis === "DUBAI" ? "DUBAI" : "BRENT";
+    net[inst] += units / INSTRUMENTS[inst].lot;
+  }
+  return net;
+}
+
 /** Lots to close, pro rata, to bring the book inside the VaR and position limits. Returns a target scale in (0, 1]. */
 export function reductionScale(state: State): number {
   const L = state.risk.limits;
@@ -137,6 +175,10 @@ export function reductionScale(state: State): number {
   for (const inst of Object.keys(net) as InstrumentId[]) if (Math.abs(net[inst]) > L.netLots[inst]) scale = Math.min(scale, (L.netLots[inst] / Math.abs(net[inst])) * 0.9);
   const gross = grossLots(state);
   if (gross > L.grossLots) scale = Math.min(scale, (L.grossLots / gross) * 0.9);
+  if (L.nakedShortOptions !== undefined) {
+    const naked = nakedShortOptions(state, coverLotsByInst(state)).total;
+    if (naked > L.nakedShortOptions) scale = Math.min(scale, (L.nakedShortOptions / naked) * 0.9);
+  }
   return Math.max(0, scale);
 }
 

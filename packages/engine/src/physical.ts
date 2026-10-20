@@ -10,9 +10,11 @@
  * ship does. A day's assessment is the model's value at that day's settle.
  */
 import { HOURS_PER_DAY, dayOfTick, isBusinessDay, isoOfDay, ymOf, monthStart, addMonths } from "./calendar";
-import { priceParts, structure } from "./markets";
+import { priceParts, structure, ttfUsdMmbtu } from "./markets";
+import { LNG } from "./refdata";
+import { lngMarketAt, unitOfGrade } from "./world_data";
 import { ckey } from "./liquidity";
-import { ledger, closeLc } from "./finance";
+import { ledger, closeLc, markEur } from "./finance";
 import { COUNTERPARTIES } from "./world_data";
 import { publishNews } from "./information";
 import { GRADES, PORTS, QUALITY_GRID, SHIPPING, VESSEL_CLASSES, type Basis } from "./world_data";
@@ -22,13 +24,20 @@ import type { AttributionLeg, AttributionRow, Cargo, CargoLeg, EngineEvent, Stat
 const usd = (x: number) => (x < 0 ? "-$" : "$") + Math.abs(Math.round(x)).toLocaleString();
 export const levelDayOf = (state: State, tick = state.tick): number => Math.floor(tick / HOURS_PER_DAY);
 
-/** tau (months to expiry) of the front Brent contract now. */
-function tauFront(state: State, inst: "BRENT" | "WTI" | "DUBAI"): number {
+/** tau (months to expiry) of the front contract of `inst` now. */
+function tauFront(state: State, inst: "BRENT" | "WTI" | "DUBAI" | "HH" | "TTF" | "JKM"): number {
   const c = state.contracts[ckey(inst, state.listed[inst][0])];
   return c ? Math.max(0, (c.expiryTick - state.tick) / HOURS_PER_DAY / 30.4375) : 0.5;
 }
 
-/** The named parts of the forward assessment of `basis` for level day `day`, from the factors now. */
+/** The attribution leg a named part of a price lands in. */
+export const legOfPart = (k: string): AttributionLeg => (k === "flat" ? "flat" : k === "basis" ? "basis" : k === "fx" ? "fx" : k === "crack" ? "crack" : "time_spread");
+
+/**
+ * The named parts of the forward assessment of `basis` for level day `day`, from the factors now. Crude bases are $/bbl;
+ * gas bases are $/MMBtu. TTF is quoted in EUR/MWh: its dollar value per MMBtu is TTF x EURUSD / 3.412, and the part of that
+ * which is the move in EURUSD since the level began is a separate `fx` part, so a TTF-priced cargo shows an FX leg.
+ */
 export function basisParts(state: State, basis: Basis, day: number): Record<string, number> {
   const f = state.factors;
   const ahead = Math.max(0, day - levelDayOf(state)) / 30.4375;
@@ -37,8 +46,15 @@ export function basisParts(state: State, basis: Basis, day: number): Record<stri
     case "BRENT": return { flat: f.brentPrompt, time_spread: structure(f.spread1.BRENT, tauFront(state, "BRENT") + ahead) };
     case "WTI": return { flat: f.brentPrompt, basis: -f.bw, time_spread: structure(f.spread1.WTI, tauFront(state, "WTI") + ahead) };
     case "DUBAI": return { flat: f.brentPrompt, basis: -f.dubaiEW, time_spread: structure(f.spread1.DUBAI, tauFront(state, "DUBAI") + ahead) };
+    case "HH": return { flat: f.hhPrompt, time_spread: structure(f.spread1.HH, tauFront(state, "HH") + ahead) };
+    case "TTF": {
+      const fx0 = state.fx0 || f.eurusd;
+      return { flat: ttfUsdMmbtu(f.ttfPrompt, fx0), fx: ttfUsdMmbtu(f.ttfPrompt, f.eurusd) - ttfUsdMmbtu(f.ttfPrompt, fx0), time_spread: ttfUsdMmbtu(structure(f.spread1.TTF, tauFront(state, "TTF") + ahead), f.eurusd) };
+    }
+    case "JKM": return { flat: ttfUsdMmbtu(f.ttfPrompt, f.eurusd), basis: f.jkmPremium, time_spread: structure(f.spread1.JKM, tauFront(state, "JKM") + ahead) };
   }
 }
+export const unitOf = (cargo: Cargo): "bbl" | "MMBtu" => unitOfGrade(cargo.grade);
 export const sumParts = (p: Record<string, number>): number => Object.values(p).reduce((a, b) => a + b, 0);
 export function basisPrice(state: State, basis: Basis, day: number): number { return sumParts(basisParts(state, basis, day)); }
 export function assessmentNow(state: State, basis: Basis): number { return basisPrice(state, basis, levelDayOf(state)); }
@@ -97,19 +113,24 @@ export function legMark(state: State, cargo: Cargo, leg: CargoLeg): { parts: Rec
   return { parts, fixedUsd, perBbl, unpriced, n };
 }
 
-/** The expected sale of an unsold cargo: forward of its benchmark at the expected discharge plus the market differential at the discharge port, by part. */
+/** The market an unsold cargo is marked against: its grade's benchmark, or for LNG the hub at its discharge terminal. */
+export function expectedSaleBasis(cargo: Cargo): Basis {
+  return cargo.grade === "LNG" ? lngMarketAt(cargo.dischargePort) : GRADES[cargo.grade].benchmark;
+}
+/** The expected sale of an unsold cargo: forward of its market at the expected discharge plus the market differential at the discharge port, by part. */
 export function expectedSaleParts(state: State, cargo: Cargo): Record<string, number> {
-  const grade = GRADES[cargo.grade];
   const dischargeDay = expectedDischargeDay(state, cargo);
   const days = windowDays(state, { kind: "after_discharge", days: 5 }, dischargeDay);
   const parts: Record<string, number> = {};
-  for (const d of days) for (const [k, v] of Object.entries(basisParts(state, grade.benchmark, d))) parts[k] = (parts[k] ?? 0) + (v * cargo.bbl) / days.length;
-  parts.basis = (parts.basis ?? 0) + cargo.bbl * (state.factors.gradeDiffs[cargo.grade] + landedAdjustment(cargo));
+  for (const d of days) for (const [k, v] of Object.entries(basisParts(state, expectedSaleBasis(cargo), d))) parts[k] = (parts[k] ?? 0) + (v * cargo.bbl) / days.length;
+  // LNG delivered at a terminal fetches the hub price less the regas fee and the buyer's margin: the netback, whatever the freight cost
+  const diff = cargo.grade === "LNG" ? -(LNG.regasFee.value + LNG.buyerMargin.value) : state.factors.gradeDiffs[cargo.grade] + landedAdjustment(cargo);
+  parts.basis = (parts.basis ?? 0) + cargo.bbl * diff;
   return parts;
 }
 /** A delivered price carries freight and insurance over FOB: the cargo's own expected (or fixed) freight per barrel plus insurance. */
 export function landedAdjustment(cargo: Cargo): number {
-  if (cargo.purchase.incoterm !== "FOB") return 0;
+  if (cargo.purchase.incoterm !== "FOB" || cargo.grade === "LNG") return 0;
   return (cargo.freight.fixedUsd ?? cargo.freight.expectedUsd) / cargo.bbl + SHIPPING.insurancePerBbl.value;
 }
 
@@ -139,7 +160,7 @@ export function expectedDischargeDay(state: State, cargo: Cargo): number {
   return cargo.laycan[1] + 2 + Math.round(estimateLadenDays(state, cargo)) + 2;
 }
 function estimateLadenDays(state: State, cargo: Cargo): number {
-  const cls = VESSEL_CLASSES[(["AFRAMAX", "SUEZMAX", "VLCC"] as const).find((c) => VESSEL_CLASSES[c].cargoKb.value * 1000 >= cargo.bbl) ?? "VLCC"];
+  const cls = VESSEL_CLASSES[cargo.grade === "LNG" ? "LNGC" : (["AFRAMAX", "SUEZMAX", "VLCC"] as const).find((c) => VESSEL_CLASSES[c].cargoKb.value * 1000 >= cargo.bbl) ?? "VLCC"];
   const { shortestPath, blockedNodes, daysFor } = require_shipping();
   const p = shortestPath(PORTS[cargo.loadPort].node, PORTS[cargo.dischargePort].node, blockedNodes(state));
   return p ? daysFor(p.nm, cls.speedLaden) : 15;
@@ -148,9 +169,9 @@ function estimateLadenDays(state: State, cargo: Cargo): number {
 import * as shippingMod from "./shipping";
 function require_shipping() { return shippingMod; }
 
-/** Unpaid extra costs of a cargo: demurrage, war risk, open or settled-but-unpaid claims. */
-export function extraCostsUsd(cargo: Cargo): { demurrage: number; warRisk: number; quality: number } {
-  return { demurrage: cargo.demurragePaidTick === null ? cargo.demurrageUsd : 0, warRisk: cargo.warRiskUsd, quality: cargo.claims.filter((c) => c.status === "open" || c.status === "settled" || c.status === "lost").reduce((a, c) => a + c.amountUsd, 0) };
+/** Unpaid extra costs of a cargo: demurrage, war risk, open or settled-but-unpaid claims, and LNG boil-off until the sale is invoiced net of it. */
+export function extraCostsUsd(cargo: Cargo): { demurrage: number; warRisk: number; quality: number; boilOff: number } {
+  return { demurrage: cargo.demurragePaidTick === null ? cargo.demurrageUsd : 0, warRisk: cargo.warRiskUsd, quality: cargo.claims.filter((c) => c.status === "open" || c.status === "settled" || c.status === "lost").reduce((a, c) => a + c.amountUsd, 0), boilOff: cargo.sale && cargo.sale.paidTick !== null ? 0 : cargo.boilOffUsd };
 }
 
 /** The whole mark of a cargo in USD, counting only what has not been paid or received yet. */
@@ -164,7 +185,7 @@ export function cargoMark(state: State, cargo: Cargo): { valueUsd: number; purch
   else saleUsd = cargo.status === "cancelled" || cargo.tankId !== null ? 0 : sumParts(exp);
   const freightUsd = cargo.freight.paidTick === null ? (cargo.freight.fixedUsd ?? cargo.freight.expectedUsd) : 0;
   const extra = extraCostsUsd(cargo);
-  const valueUsd = cargo.status === "cancelled" ? 0 : saleUsd - purchaseUsd - freightUsd - extra.demurrage - extra.warRisk - extra.quality;
+  const valueUsd = cargo.status === "cancelled" ? 0 : saleUsd - purchaseUsd - freightUsd - extra.demurrage - extra.warRisk - extra.quality - extra.boilOff;
   return { valueUsd, purchasePerBbl: p.perBbl, salePerBbl, expectedSalePerBbl: sumParts(exp) / cargo.bbl, freightUsd, extra };
 }
 
@@ -172,22 +193,29 @@ export function cargoesMarkUsd(state: State): number {
   return state.cargoes.reduce((a, c) => a + cargoMark(state, c).valueUsd, 0);
 }
 
-/** Net flat-price exposure of the physical book in barrels: long on unpriced sales and unsold cargoes, short on unpriced purchases. */
-export function physicalExposureBbl(state: State): { bbl: number; byCargo: Record<string, number> } {
+/**
+ * Net flat-price exposure of the physical book: long on unpriced sales and unsold cargoes, short on unpriced purchases, in the
+ * units of each leg's basis (barrels for crude, MMBtu for gas). `bbl` is the crude total (the figure the Brent hedge offsets);
+ * `byBasis` splits every unit by the market it prices against, so a gas cargo's hedge is sized in the right contract.
+ */
+export function physicalExposureBbl(state: State): { bbl: number; byCargo: Record<string, number>; byBasis: Partial<Record<Basis, number>>; gas: number } {
   let total = 0;
+  let gas = 0;
   const byCargo: Record<string, number> = {};
+  const byBasis: Partial<Record<Basis, number>> = {};
+  const add = (basis: Basis, units: number) => { byBasis[basis] = (byBasis[basis] ?? 0) + units; if (basis === "HH" || basis === "TTF" || basis === "JKM") gas += units; else total += units; };
   for (const c of state.cargoes) {
     if (c.status === "cancelled" || c.status === "delivered" && c.sale && c.sale.fixed !== null && c.purchase.fixed !== null) continue;
     const p = legMark(state, c, c.purchase);
     let e = -c.bbl * (p.unpriced.length / p.n);
-    if (c.sale) { const s = legMark(state, c, c.sale); e += c.bbl * (s.unpriced.length / s.n); }
-    else if (c.tankId === null) e += c.bbl;
+    add(c.purchase.basis, e);
+    if (c.sale) { const s = legMark(state, c, c.sale); const x = c.bbl * (s.unpriced.length / s.n); e += x; add(c.sale.basis, x); }
+    else if (c.tankId === null) { e += c.bbl; add(expectedSaleBasis(c), c.bbl); }
     byCargo[c.id] = e;
-    total += e;
   }
   // oil in a tank is owned outright: long until it is sold forward (the parcel leaves the tank's mark at the sale)
-  for (const t of state.tanks) for (const p of t.parcels) { byCargo[p.cargoId ?? p.id] = (byCargo[p.cargoId ?? p.id] ?? 0) + p.bbl; total += p.bbl; }
-  return { bbl: total, byCargo };
+  for (const t of state.tanks) for (const p of t.parcels) { byCargo[p.cargoId ?? p.id] = (byCargo[p.cargoId ?? p.id] ?? 0) + p.bbl; add(p.benchmark, p.bbl); }
+  return { bbl: total, byCargo, byBasis, gas };
 }
 
 // ---------------------------------------------------------------- attribution: remark every cargo against its bases
@@ -212,14 +240,16 @@ function legRows(state: State, cargo: Cargo, leg: CargoLeg, sign: 1 | -1, label:
   for (const k of new Set([...Object.keys(now), ...Object.keys(leg.base)])) {
     const delta = ((now[k] ?? 0) - (leg.base[k] ?? 0)) * sign;
     if (Math.abs(delta) < 0.005) continue;
-    const legName = k === "flat" ? "flat" : k === "basis" ? "basis" : "time_spread";
+    const legName = legOfPart(k);
     const share = prev.length / n;
     if (first) {
-      rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: legName, amount: delta, text: k === "basis" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: contracted at ${leg.basis} ${leg.diff >= 0 ? "+" : ""}${leg.diff.toFixed(2)} on ${cargo.bbl.toLocaleString()} bbl: the differential and the benchmark basis booked ${sign > 0 ? "as revenue" : "as cost"}.` : k === "flat" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the flat-price value of ${cargo.bbl.toLocaleString()} bbl booked ${sign > 0 ? "as revenue" : "as cost"} at today's forward (${windowText(leg.window)}).` : `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the curve's value at the ${windowText(leg.window)} window booked ${sign > 0 ? "as revenue" : "as cost"}.` });
+      const u = unitOf(cargo);
+      rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: legName, amount: delta, text: k === "basis" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: contracted at ${leg.basis} ${leg.diff >= 0 ? "+" : ""}${leg.diff.toFixed(2)} on ${cargo.bbl.toLocaleString()} ${u}: the differential and the benchmark basis booked ${sign > 0 ? "as revenue" : "as cost"}.` : k === "flat" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the flat-price value of ${cargo.bbl.toLocaleString()} ${u} booked ${sign > 0 ? "as revenue" : "as cost"} at today's forward (${windowText(leg.window)}).` : k === "fx" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: priced in euros (TTF): the dollar value of the EUR leg at today's EURUSD against the level's opening rate.` : `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the curve's value at the ${windowText(leg.window)} window booked ${sign > 0 ? "as revenue" : "as cost"}.` });
       continue;
     }
-    const text = k === "flat" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the flat price moved while ${Math.round(share * 100)}% of the ${windowText(leg.window)} window was unpriced (${sign > 0 ? "long" : "short"} ${Math.round(cargo.bbl * share).toLocaleString()} bbl of exposure).`
-      : k === "basis" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the ${leg.basis === "DATED" ? "Dated-to-futures" : leg.basis === "DUBAI" ? "Brent-Dubai" : "Brent-WTI"} basis moved on the unpriced part of the window.`
+    const text = k === "flat" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the flat price moved while ${Math.round(share * 100)}% of the ${windowText(leg.window)} window was unpriced (${sign > 0 ? "long" : "short"} ${Math.round(cargo.bbl * share).toLocaleString()} ${unitOf(cargo)} of exposure).`
+      : k === "basis" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the ${leg.basis === "DATED" ? "Dated-to-futures" : leg.basis === "DUBAI" ? "Brent-Dubai" : leg.basis === "JKM" ? "JKM-over-TTF (Asian premium)" : "Brent-WTI"} basis moved on the unpriced part of the window.`
+      : k === "fx" ? `${GRADES[cargo.grade].name} ${cargo.id} ${label}: EURUSD moved on the euro-priced (TTF) part of the window: the FX leg of a gas cargo sold in Europe.`
       : `${GRADES[cargo.grade].name} ${cargo.id} ${label}: the curve moved or a day passed: the forward value of the unpriced days changed (window timing is a time spread).`;
     rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: legName, amount: delta, text });
   }
@@ -253,7 +283,7 @@ export function remarkCargo(state: State, cargo: Cargo, reason: string): Attribu
       // the expected sale the cargo was marked at is reversed: the contracted sale has just been booked in full
       for (const [k, v] of Object.entries(cargo.marketBase)) {
         if (Math.abs(v) < 0.005) continue;
-        rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: k === "flat" ? "flat" : k === "basis" ? "basis" : "time_spread", amount: -v, text: `${name}: the market value the unsold cargo was marked at is replaced by the contract (${reason}); sold at ${cargo.sale.diff >= 0 ? "+" : ""}${cargo.sale.diff.toFixed(2)} over ${cargo.sale.basis}.` });
+        rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: legOfPart(k), amount: -v, text: `${name}: the market value the unsold cargo was marked at is replaced by the contract (${reason}); sold at ${cargo.sale.diff >= 0 ? "+" : ""}${cargo.sale.diff.toFixed(2)} over ${cargo.sale.basis}.` });
       }
       cargo.marketBase = {};
     }
@@ -262,8 +292,8 @@ export function remarkCargo(state: State, cargo: Cargo, reason: string): Attribu
     for (const k of new Set([...Object.keys(exp), ...Object.keys(cargo.marketBase)])) {
       const delta = (exp[k] ?? 0) - (cargo.marketBase[k] ?? 0);
       if (Math.abs(delta) < 0.005) continue;
-      const legName = k === "flat" ? "flat" : k === "basis" ? "basis" : "time_spread";
-      rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: legName, amount: delta, text: k === "basis" ? `${name} unsold: the market differential for ${GRADES[cargo.grade].name} delivered ${PORTS[cargo.dischargePort].name} moved (now ${(state.factors.gradeDiffs[cargo.grade] + landedAdjustment(cargo)).toFixed(2)} over ${GRADES[cargo.grade].benchmark}).` : k === "flat" ? `${name} unsold: the flat price moved on ${cargo.bbl.toLocaleString()} bbl of unsold oil.` : `${name} unsold: the curve at the expected sale window moved.` });
+      const legName = legOfPart(k);
+      rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: legName, amount: delta, text: k === "basis" ? (cargo.grade === "LNG" ? `${name} unsold: marked at ${expectedSaleBasis(cargo)} delivered ${PORTS[cargo.dischargePort].name} less the regas fee and the buyer's margin (the netback).` : `${name} unsold: the market differential for ${GRADES[cargo.grade].name} delivered ${PORTS[cargo.dischargePort].name} moved (now ${(state.factors.gradeDiffs[cargo.grade] + landedAdjustment(cargo)).toFixed(2)} over ${GRADES[cargo.grade].benchmark}).`) : k === "flat" ? `${name} unsold: the flat price moved on ${cargo.bbl.toLocaleString()} ${unitOf(cargo)} of unsold ${cargo.grade === "LNG" ? "gas" : "oil"}.` : k === "fx" ? `${name} unsold: EURUSD moved on the euro-priced market it is marked against.` : `${name} unsold: the curve at the expected sale window moved.` });
     }
     cargo.marketBase = exp;
   }
@@ -276,11 +306,12 @@ export function remarkCargo(state: State, cargo: Cargo, reason: string): Attribu
 }
 
 /** Book a demurrage or war-risk or claim charge: a row and the cargo's cost. */
-export function chargeCargo(state: State, cargo: Cargo, kind: "demurrage" | "freight" | "quality", amountUsd: number, text: string): AttributionRow {
+export function chargeCargo(state: State, cargo: Cargo, kind: "demurrage" | "freight" | "quality" | "boiloff", amountUsd: number, text: string): AttributionRow {
   if (kind === "demurrage") cargo.demurrageUsd += amountUsd;
   else if (kind === "freight") cargo.warRiskUsd += amountUsd;
+  else if (kind === "boiloff") cargo.boilOffUsd += amountUsd;
   cargo.extraCostsBase += amountUsd;
-  return { tick: state.tick, inst: "BRENT", month: cargo.id, leg: kind, amount: -amountUsd, text };
+  return { tick: state.tick, inst: "BRENT", month: cargo.id, leg: kind === "boiloff" ? "freight" : kind, amount: -amountUsd, text };
 }
 
 // ---------------------------------------------------------------- prints and payments at the settle
@@ -331,8 +362,14 @@ export function payDues(state: State): EngineEvent[] {
         continue;
       }
       leg.paidTick = state.tick;
-      const net = sign < 0 ? leg.amountUsd - cargo.prepaidUsd : leg.amountUsd;
-      ledger(state, "other", sign * net, `${sign > 0 ? "Received" : "Paid"} ${usd(net)} for ${name} ${label} (${leg.fixed!.toFixed(2)} $/bbl x ${cargo.bbl.toLocaleString()} bbl${sign < 0 && cargo.prepaidUsd > 0 ? `, less ${usd(cargo.prepaidUsd)} prepaid` : ""})`);
+      const net = sign < 0 ? leg.amountUsd - cargo.prepaidUsd : leg.amountUsd - cargo.boilOffUsd;
+      const u = unitOf(cargo);
+      if (leg.basis === "TTF") {
+        // a TTF-priced invoice is settled in euros at today's rate: the cash lands in the EUR account (revalued first, so the FX leg is exact)
+        markEur(state);
+        const eur = net / state.factors.eurusd;
+        ledger(state, "other", sign * eur, `${sign > 0 ? "Received" : "Paid"} EUR ${Math.round(eur).toLocaleString()} (${usd(net)} at ${state.factors.eurusd.toFixed(4)}) for ${name} ${label} (${leg.fixed!.toFixed(3)} $/${u} x ${cargo.bbl.toLocaleString()} ${u}${sign > 0 && cargo.boilOffUsd > 0 ? `, less ${usd(cargo.boilOffUsd)} of boil-off` : ""})`, "EUR");
+      } else ledger(state, "other", sign * net, `${sign > 0 ? "Received" : "Paid"} ${usd(net)} for ${name} ${label} (${leg.fixed!.toFixed(u === "bbl" ? 2 : 3)} $/${u} x ${cargo.bbl.toLocaleString()} ${u}${sign < 0 && cargo.prepaidUsd > 0 ? `, less ${usd(cargo.prepaidUsd)} prepaid` : ""}${sign > 0 && cargo.boilOffUsd > 0 ? `, less ${usd(cargo.boilOffUsd)} of boil-off` : ""})`);
       if (sign < 0) { closeLc(state, cargo); cargo.prepaidUsd = 0; }
       if (cs) cs.dealsWithPlayer += 1;
       events.push({ kind: "cargo", tick: state.tick, text: `${sign > 0 ? "Received" : "Paid"} ${usd(net)}: ${name} ${label} invoice.`, data: { cargoId: cargo.id } });
@@ -359,7 +396,7 @@ export function cargoFromOffer(state: State, t: Tender): Cargo {
     id, tenderId: t.id, grade: t.grade, bbl: t.bbl, purchase, sale: null, status: "contracted", loadPort: t.port, dischargePort, laycan: t.laycan, dischargeWindow: null,
     vesselId: null, voyageId: null, blTick: null, dischargeTick: null, quality: { api: grade.api, sulphur: grade.sulphur }, claims: [],
     freight: { expectedUsd: 0, fixedUsd: null, paidTick: null, base: 0 }, demurrageUsd: 0, demurragePaidTick: null, warRiskUsd: 0, extraCostsBase: 0, marketBase: {}, createdTick: state.tick,
-    requiresLc: t.requiresLc, lcId: null, prepaidUsd: 0, insured: false, tankId: null, parcelId: null, cancelled: null,
+    requiresLc: t.requiresLc, lcId: null, prepaidUsd: 0, insured: false, tankId: null, parcelId: null, cancelled: null, regasBooked: false, boilOffUsd: 0,
   };
   cargo.freight.expectedUsd = isPipeline(cargo) ? 0 : expectedFreightUsd(state, cargo);
   return cargo;
@@ -383,7 +420,7 @@ export function prepayCargo(state: State, cargo: Cargo, discountPerBbl: number):
 export function cancelCargo(state: State, cargo: Cargo, by: string, reason: string, penaltyToReceiver: boolean): AttributionRow[] {
   const rows: AttributionRow[] = [];
   const name = `${GRADES[cargo.grade].name} ${cargo.id}`;
-  const sign = (k: string): AttributionLeg => (k === "flat" ? "flat" : k === "basis" ? "basis" : "time_spread");
+  const sign = (k: string): AttributionLeg => legOfPart(k);
   for (const [k, v] of Object.entries(cargo.purchase.base)) if (Math.abs(v) >= 0.005) rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: sign(k), amount: v, text: `${name} cancelled (${reason}): the purchase comes off the mark.` });
   cargo.purchase.base = {};
   if (cargo.sale) {
@@ -504,7 +541,7 @@ export function raiseQualityClaim(state: State, cargo: Cargo, usdPerBbl: number,
 
 export function cargoSummary(state: State, cargo: Cargo): string {
   const m = cargoMark(state, cargo);
-  return `${GRADES[cargo.grade].name} ${cargo.bbl.toLocaleString()} bbl ${cargo.purchase.incoterm} ${PORTS[cargo.loadPort].name} at ${cargo.purchase.basis} ${cargo.purchase.diff >= 0 ? "+" : ""}${cargo.purchase.diff.toFixed(2)} (${windowText(cargo.purchase.window)}); ${cargo.sale ? `sold ${cargo.sale.incoterm} ${PORTS[cargo.sale.port].name} at ${cargo.sale.basis} ${cargo.sale.diff >= 0 ? "+" : ""}${cargo.sale.diff.toFixed(2)} (${windowText(cargo.sale.window)})` : `unsold, marked at ${m.expectedSalePerBbl.toFixed(2)} delivered ${PORTS[cargo.dischargePort].name}`}; mark ${usd(m.valueUsd)}.`;
+  return `${GRADES[cargo.grade].name} ${cargo.bbl.toLocaleString()} ${unitOf(cargo)} ${cargo.purchase.incoterm} ${PORTS[cargo.loadPort].name} at ${cargo.purchase.basis} ${cargo.purchase.diff >= 0 ? "+" : ""}${cargo.purchase.diff.toFixed(2)} (${windowText(cargo.purchase.window)}); ${cargo.sale ? `sold ${cargo.sale.incoterm} ${PORTS[cargo.sale.port].name} at ${cargo.sale.basis} ${cargo.sale.diff >= 0 ? "+" : ""}${cargo.sale.diff.toFixed(2)} (${windowText(cargo.sale.window)})` : `unsold, marked at ${m.expectedSalePerBbl.toFixed(2)} delivered ${PORTS[cargo.dischargePort].name}`}; mark ${usd(m.valueUsd)}.`;
 }
 
 export const vesselForCargo = (state: State, cargo: Cargo) => state.vessels.find((v) => v.id === cargo.vesselId) ?? null;

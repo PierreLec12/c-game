@@ -28,6 +28,10 @@ import { worstStress } from "./risk";
 import { CHOKEPOINTS } from "./refdata";
 import { COUNTERPARTIES } from "./world_data";
 import { clone } from "./clone";
+import { initRefinery, runRefineryDay } from "./refinery";
+import { initSignals, stepSignals } from "./signals";
+import { lotKey, makeOptionOrder } from "./optionbook";
+import { fillOption } from "./actions";
 import type { Action, Contract, EngineEvent, Factors, Fill, LogEntry, Refusal, State, TickResult, WorldState } from "./types";
 
 export { makeRng };
@@ -55,7 +59,7 @@ function prehistory(spec: LevelSpec, rng: Rng, startDay: number): { world: World
     factors = stepFactorsDaily(factors, world, rng.stream("daily", tick0));
     if (!isBusinessDay(d)) continue;
     for (let h = 0; h < HOURS_PER_DAY; h++) {
-      factors = stepFactorsHourly(factors, world, rng.stream("prices", tick0 + h), refs, { hour: h, day: d, regime: world.regime, releaseProximity: 0 });
+      factors = stepFactorsHourly(factors, world, rng.stream("prices", tick0 + h), refs, { hour: h, day: d, regime: world.regime, releaseProximity: 0 }, rng.stream("gas", tick0 + h));
       if (h === CLOCK.settleHour.value) history.push({ factors, day: d });
     }
   }
@@ -83,18 +87,19 @@ export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = 
   const a = anchors(world, snapped, refsOf(spec), startDay);
   const factors: Factors = { ...snapped, bw: a.bw, gasolineCrack: a.gasolineCrack, dieselCrack: a.dieselCrack, fuelOilCrack: a.fuelOilCrack, dubaiEW: a.dubaiEW, spread1: { ...a.spread1, ...(spec.factors.spread1 ?? {}) } };
   const state: State = {
-    version: 1, seed, tick: 0, startDay, world, factors, contracts: {}, listed: { BRENT: [], WTI: [], RBOB: [], ULSD: [], HH: [], TTF: [], DUBAI: [] }, quotes: {},
+    version: 1, seed, tick: 0, startDay, world, factors, contracts: {}, listed: { BRENT: [], WTI: [], RBOB: [], ULSD: [], HH: [], TTF: [], DUBAI: [], JKM: [] }, quotes: {},
     lots: [], orders: [], fills: [],
     finance: initFinance(spec.capital, spec.creditLine),
     pnl: { realised: 0, unrealised: 0, fees: 0, interest: 0, today: 0, total: 0, attribution: [], equityCurve: [], settles: [] },
     risk: {
-      var95: { v: 0, at: 0, why: "No open positions: VaR is zero." }, grossLots: 0, netLots: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0 },
+      var95: { v: 0, at: 0, why: "No open positions: VaR is zero." }, grossLots: 0, netLots: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0, JKM: 0 },
       limits: { ...spec.limits, netLots: { ...spec.limits.netLots } }, breaches: [], lives: spec.lives, livesLost: 0, messages: [], stress: [],
       peakEquity: spec.capital, maxDrawdown: 0, closesInsideLimit: 0, closesTotal: 0, varBreachedAtClose: false, stopLossRef: 0, forcedReductions: 0, closes: [],
     },
     news: [], releases: [], events: [],
     cargoes: [], tenders: [], vessels: initFleet(), voyages: [], chokepoints: Object.fromEntries(CHOKEPOINTS.map((c) => [c.id, { id: c.id, status: "open" as const, since: 0, note: "open" }])), portCongestion: {},
     lcs: [], tanks: [], counterparties: initCounterparties(), infoDelayHours: spec.infoDelayHours ?? 0, pendingNewsDelay: 0,
+    refinery: spec.refinery ? initRefinery(spec.refinery) : null, signals: [], feedBought: spec.feedIncluded === true, fx0: factors.eurusd, depthScale: spec.backMonthDepth ?? 1,
     level: {
       id: spec.id, tier: spec.tier, title: spec.title, startDay, endTick: spec.days * HOURS_PER_DAY, status: "running",
       objectives: spec.objectives.map((o) => ({ id: o.id, text: o.text, status: "pending" })), cardsUnlocked: [], cardsOpened: [],
@@ -111,7 +116,9 @@ export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = 
     if (ev.kind === "inventory_release") addRelease(state, { id: ev.id, name: "Weekly crude inventories", tick: ev.tick, unit: "mb" });
     if (ev.kind === "opec_meeting") addRelease(state, { id: ev.id, name: "OPEC+ meeting", tick: ev.tick, unit: "kb/d" });
     if (ev.kind === "positioning_report") addRelease(state, { id: ev.id, name: "Positioning report", tick: ev.tick, unit: "k lots" });
+    if (ev.kind === "gas_storage_release") addRelease(state, { id: ev.id, name: "Weekly US gas storage", tick: ev.tick, unit: "bcf" });
   }
+  state.signals = initSignals(state);
   refreshListings(state);
   rebuildQuotes(state, isTradingTick(startDay, 0));
   state.risk.var95 = bookVar(state);
@@ -148,7 +155,7 @@ function rebuildQuotes(state: State, open: boolean): void {
       const c = state.contracts[key];
       const tau = Math.max(0, (c.expiryTick - state.tick) / HOURS_PER_DAY / 30.4375);
       const mid = priceParts(state.factors, inst, tau).price + c.impact;
-      state.quotes[key] = makeQuote(inst, m, mid, idx, hour, state.world.regime, open, state.tick, c.impact);
+      state.quotes[key] = makeQuote(inst, m, mid, idx, hour, state.world.regime, open, state.tick, c.impact, state.depthScale);
     });
   }
 }
@@ -256,16 +263,22 @@ export function tick(state: State, actions: Action[], rng: Rng): TickResult {
           const c = Math.round(((7 * 0.3 * next.world.targets.crudeBalance) / 1000 + rng.stream("consensus", next.tick).normal() * 1.2) * 10) / 10;
           r.consensus = { v: c, at: next.tick, why: "Analyst consensus for the weekly US crude stock change: the trend balance plus survey noise." };
         }
+        if (r.name === "Weekly US gas storage") {
+          const seasonal = next.world.targets.usGasGap >= 0 ? 60 : 40;
+          const c = Math.round(seasonal - 6 * next.world.hddAnomaly.us + rng.stream("consensus", next.tick).normal() * 5);
+          r.consensus = { v: c, at: next.tick, why: "Analyst consensus for the weekly storage change: the seasonal flow less the heating anomaly, plus survey noise." };
+        }
       }
     }
   }
   const trading = isTradingTick(next.startDay, next.tick);
   if (trading) {
-    next.factors = stepFactorsHourly(next.factors, next.world, rng.stream("prices", next.tick), refs, { hour, day, regime: next.world.regime, releaseProximity: releaseProximity(next) });
+    next.factors = stepFactorsHourly(next.factors, next.world, rng.stream("prices", next.tick), refs, { hour, day, regime: next.world.regime, releaseProximity: releaseProximity(next) }, rng.stream("gas", next.tick));
     decayImpact(next);
   }
   const fired = fireDue(next, rng.stream("events", next.tick));
   events.push(...fired);
+  events.push(...stepSignals(next, rng.stream("signals", next.tick)));
   for (const n of next.news) if (n.tick === next.tick && !events.some((e) => e.text === n.headline)) events.push({ kind: "news", tick: next.tick, text: n.shockTick !== undefined ? `${n.headline} (the market moved ${next.tick - n.shockTick} hours ago)` : n.headline, pause: n.shockTick !== undefined });
   rebuildQuotes(next, trading);
   if (trading) {
@@ -284,6 +297,7 @@ export function tick(state: State, actions: Action[], rng: Rng): TickResult {
       events.push({ kind: "tender", tick: next.tick, text: `Tender ${t.id} from ${COUNTERPARTIES[t.counterparty].name} expired${t.trap ? `. ${t.trap}` : "."}`, data: { tenderId: t.id } });
     }
     if (hour === 0) events.push(...payDues(next));
+    if (hour === CLOCK.settleHour.value && next.refinery) { const r = runRefineryDay(next); next.pnl.attribution.push(...r.rows); events.push(...r.events); }
   }
   if (isSettleTick(next.startDay, next.tick)) events.push(...settle(next, spec));
   next.risk.var95 = bookVar(next);
@@ -332,10 +346,20 @@ function settle(state: State, spec: LevelSpec): EngineEvent[] {
   state.pnl.attribution.push(...rows);
   if (Math.abs(vmUsd) > 0.005) { ledger(state, "variation_margin", vmUsd, `Variation margin at the ${formatClock(state.startDay, state.tick)} settle`); state.pnl.realised += vmUsd; }
   if (Math.abs(vmEur) > 0.005) { ledger(state, "variation_margin", vmEur, `Variation margin (EUR) at the settle`, "EUR"); state.pnl.realised += vmEur * state.factors.eurusd; }
+  // option expiries: an option lot on its last day has just been marked at intrinsic value; it leaves the book
+  {
+    const expired = state.lots.filter((l) => l.option && l.option.expiryTick <= state.tick);
+    if (expired.length) {
+      state.lots = state.lots.filter((l) => !expired.includes(l));
+      const groups = new Map<string, number>();
+      for (const l of expired) groups.set(`${INSTRUMENTS[l.inst].name} ${monthLabel(l.month)} ${l.option!.strike} ${l.option!.kind}`, (groups.get(`${INSTRUMENTS[l.inst].name} ${monthLabel(l.month)} ${l.option!.strike} ${l.option!.kind}`) ?? 0) + l.qty);
+      for (const [name, qty] of groups) events.push({ kind: "expiry", tick: state.tick, text: `${name} expired: ${Math.abs(qty)} lots ${qty > 0 ? "long" : "short"} cash-settled at intrinsic value (${expired.find((l) => `${INSTRUMENTS[l.inst].name} ${monthLabel(l.month)} ${l.option!.strike} ${l.option!.kind}` === name)!.lastMark.toFixed(INSTRUMENTS[expired[0].inst].decimals)}). An option hedge that needed to live longer should have been rolled.`, pause: true, data: { option: name, qty } });
+    }
+  }
   // expiries: lots in a contract on its last day are cash-settled at the settle
   for (const c of Object.values(state.contracts)) {
     if (c.expiryTick !== state.tick) continue;
-    const lots = state.lots.filter((l) => l.inst === c.inst && l.month === c.month);
+    const lots = state.lots.filter((l) => l.inst === c.inst && l.month === c.month && !l.option);
     if (lots.length) {
       const net = lots.reduce((a, l) => a + l.qty, 0);
       const o = makeOrder(state, "exchange", c.inst, c.month, net > 0 ? "sell" : "buy", Math.abs(net), "market", undefined, "expiry");
@@ -447,12 +471,11 @@ function forcedReduce(state: State, scale: number, text: string): EngineEvent[] 
   state.risk.messages.push({ tick: state.tick, text, severity: "breach" });
   state.risk.forcedReductions += 1;
   const byContract = new Map<string, number>();
-  for (const l of state.lots) byContract.set(ckey(l.inst, l.month), (byContract.get(ckey(l.inst, l.month)) ?? 0) + l.qty);
+  for (const l of state.lots) byContract.set(lotKey(l), (byContract.get(lotKey(l)) ?? 0) + l.qty);
   for (const [key, net] of byContract) {
     const cut = Math.ceil(Math.abs(net) * (1 - scale));
     if (cut <= 0) continue;
-    const [inst, month] = key.split(":") as [InstrumentId, string];
-    events.push(...fillMarket(state, makeOrder(state, "risk", inst, month, net > 0 ? "sell" : "buy", cut, "market", undefined, "forced")));
+    events.push(...closeSome(state, "risk", key, net, cut, "forced"));
   }
   return events;
 }
@@ -461,14 +484,23 @@ function liquidate(state: State, text: string): EngineEvent[] {
   const events: EngineEvent[] = [{ kind: "liquidation", tick: state.tick, text, pause: true }];
   state.risk.messages.push({ tick: state.tick, text, severity: "breach" });
   const byContract = new Map<string, number>();
-  for (const l of state.lots) byContract.set(ckey(l.inst, l.month), (byContract.get(ckey(l.inst, l.month)) ?? 0) + l.qty);
+  for (const l of state.lots) byContract.set(lotKey(l), (byContract.get(lotKey(l)) ?? 0) + l.qty);
   for (const [key, net] of byContract) {
     if (net === 0) continue;
-    const [inst, month] = key.split(":") as [InstrumentId, string];
-    events.push(...fillMarket(state, makeOrder(state, "clearer", inst, month, net > 0 ? "sell" : "buy", Math.abs(net), "market", undefined, "forced")));
+    events.push(...closeSome(state, "clearer", key, net, Math.abs(net), "forced"));
   }
   for (const o of state.orders) if (o.status === "resting") o.status = "cancelled";
   return events;
+}
+
+/** Close `cut` lots of a futures or option position by its key, at the touch. */
+function closeSome(state: State, who: string, key: string, net: number, cut: number, tag: "forced"): EngineEvent[] {
+  const parts = key.split(":");
+  const inst = parts[0] as InstrumentId;
+  const month = parts[1];
+  const side: "buy" | "sell" = net > 0 ? "sell" : "buy";
+  if (parts.length === 4) return fillOption(state, makeOptionOrder(state, who, inst, month, side, cut, parts[2] as "call" | "put", Number(parts[3]), tag));
+  return fillMarket(state, makeOrder(state, who, inst, month, side, cut, "market", undefined, tag));
 }
 
 function loseLife(state: State, spec: LevelSpec, text: string): EngineEvent[] {

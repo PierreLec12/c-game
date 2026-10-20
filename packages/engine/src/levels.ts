@@ -7,6 +7,7 @@ import type { InstrumentId } from "./refdata";
 import type { FactorInit } from "./markets";
 import type { WorldInit } from "./world";
 import type { Action, ActionType, DrillQuestion, EngineEvent, QuizQuestion, Regime, RiskLimits, State } from "./types";
+import type { Grade } from "./world_data";
 
 export interface EventSchedule {
   id?: string;
@@ -67,6 +68,12 @@ export interface LevelSpec {
   passRuleText: string;
   /** tier knob: hours between a shock and its headline for the delayable event kinds (0 in tiers 0 to 2) */
   infoDelayHours?: number;
+  /** the player's refinery (level 14 onward): the plant is built at the level start with this slate and run rate */
+  refinery?: { slate: Grade; runs: number };
+  /** the assessment and signals feed is included in the level (otherwise it is bought on the Intel screen) */
+  feedIncluded?: boolean;
+  /** tier knob: depth multiplier for the third listed month and beyond (thin back months in tier 4) */
+  backMonthDepth?: number;
 }
 
 const registry = new Map<number, LevelSpec>();

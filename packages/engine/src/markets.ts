@@ -20,7 +20,9 @@ import type { Factors, Quote, Regime, WorldState } from "./types";
 import { season } from "./calendar";
 import { GRADES, QUALITY_GRID, type Grade } from "./world_data";
 
-export const ALL_INSTRUMENTS: InstrumentId[] = ["BRENT", "WTI", "RBOB", "ULSD", "HH", "TTF", "DUBAI"];
+export const ALL_INSTRUMENTS: InstrumentId[] = ["BRENT", "WTI", "RBOB", "ULSD", "HH", "TTF", "DUBAI", "JKM"];
+/** TTF in $/MMBtu at the given EURUSD: the conversion every gas hedge has to get right. */
+export const ttfUsdMmbtu = (ttfEurMwh: number, eurusd: number): number => (ttfEurMwh * eurusd) / CONVERSIONS.MMBTU_PER_MWH.value;
 
 export interface FactorInit { brentRef?: number; hhRef?: number; ttfRef?: number; eurusd?: number; spread1?: Partial<Record<InstrumentId, number>>; bw?: number; gasolineCrack?: number; dieselCrack?: number }
 
@@ -39,6 +41,7 @@ export function storageCostFor(inst: InstrumentId): number {
     case "HH": return 0.08;
     case "TTF": return 0.9;
     case "DUBAI": return STORAGE_COST.FUJAIRAH.value;
+    case "JKM": return 0.12;
   }
 }
 
@@ -59,6 +62,8 @@ export function anchors(world: WorldState, f: Factors, refs: Required<Pick<Facto
   const logHh = Math.log(refs.hhRef) - F.hhPerBcfGap.value * world.gasStorageGap.us + F.hhPerHdd.value * world.hddAnomaly.us;
   const logTtf = Math.log(refs.ttfRef) - F.ttfPerTwhGap.value * world.gasStorageGap.eu + F.ttfPerHdd.value * world.hddAnomaly.eu - 0.05 * (world.lngArrivals - 1);
   const dubaiEW = F.dubaiEwBase.value + 2.0 * (world.geo - 0.2);
+  // JKM over TTF: the Asian premium widens when LNG arrivals thin and when Asian heating demand runs hot
+  const jkmPremium = F.jkmPremium.value - 1.0 * (world.lngArrivals - 1) + 0.03 * world.hddAnomaly.us;
   // grade differentials on the quality grid: a sour grade cheapens when fuel oil weakens
   const gradeDiffs = {} as Record<Grade, number>;
   for (const g of Object.values(GRADES)) gradeDiffs[g.id] = g.baseDiff.value + 0.08 * QUALITY_GRID.usdPerSulphurPct.value * (f.fuelOilCrack - F.fuelOilCrackBase.value) * g.sulphur;
@@ -71,15 +76,16 @@ export function anchors(world: WorldState, f: Factors, refs: Required<Pick<Facto
     HH: spreadTarget("HH", world.gasStorageGap.us / 40, f.hhPrompt, world.baseRate),
     TTF: spreadTarget("TTF", world.gasStorageGap.eu / 4, f.ttfPrompt, world.baseRate),
     DUBAI: spreadTarget("DUBAI", world.oecdInvGap - 80 * (world.geo - 0.2), f.brentPrompt - f.dubaiEW, world.baseRate),
+    JKM: spreadTarget("JKM", world.gasStorageGap.eu / 4, ttfUsdMmbtu(f.ttfPrompt, f.eurusd) + f.jkmPremium, world.baseRate),
   };
-  return { logBrent, bw, gasolineCrack, dieselCrack, fuelOilCrack, logHh, logTtf, dubaiEW, spread1, gradeDiffs, freightIndex };
+  return { logBrent, bw, gasolineCrack, dieselCrack, fuelOilCrack, logHh, logTtf, dubaiEW, jkmPremium, spread1, gradeDiffs, freightIndex };
 }
 
 /** Target front spread from the inventory gap: contango bounded by full carry, backwardation steeper with tightness. */
 export function spreadTarget(inst: InstrumentId, gapMb: number, price: number, rate: number): number {
   const F = FACTORS;
   const carry = fullCarry(inst, price, rate);
-  const scale = inst === "RBOB" || inst === "ULSD" ? 1 / 42 : inst === "HH" ? 0.05 : inst === "TTF" ? 0.5 : 1;
+  const scale = inst === "RBOB" || inst === "ULSD" ? 1 / 42 : inst === "HH" || inst === "JKM" ? 0.05 : inst === "TTF" ? 0.5 : 1;
   // near tank tops (a very large surplus) the contango can exceed the marginal cost of carry: super-contango (stylised)
   const cap = gapMb > 40 ? carry * 1.3 : carry * 0.95;
   if (gapMb >= 0) return Math.min(F.contangoPerMbSurplus.value * gapMb * scale, cap);
@@ -104,9 +110,9 @@ export function initFactors(world: WorldState, init: FactorInit, regime: Regime)
   const ttfRef = init.ttfRef ?? 35;
   const base: Factors = {
     brentPrompt: brentRef, bw: init.bw ?? 2.5, gasolineCrack: init.gasolineCrack ?? 12, dieselCrack: init.dieselCrack ?? 22, fuelOilCrack: -9,
-    hhPrompt: hhRef, ttfPrompt: ttfRef, eurusd: init.eurusd ?? 1.08, dubaiEW: 1.5, datedDiff: 0.2,
-    spread1: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0.02, TTF: 0.3, DUBAI: 0 },
-    vol: { BRENT: 0.3, WTI: 0.3, RBOB: 0.3, ULSD: 0.3, HH: 0.3, TTF: 0.3, DUBAI: 0.3 },
+    hhPrompt: hhRef, ttfPrompt: ttfRef, eurusd: init.eurusd ?? 1.08, dubaiEW: 1.5, datedDiff: 0.2, jkmPremium: FACTORS.jkmPremium.value,
+    spread1: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0.02, TTF: 0.3, DUBAI: 0, JKM: 0.02 },
+    vol: { BRENT: 0.3, WTI: 0.3, RBOB: 0.3, ULSD: 0.3, HH: 0.3, TTF: 0.3, DUBAI: 0.3, JKM: 0.3 },
     gradeDiffs: Object.fromEntries(Object.values(GRADES).map((g) => [g.id, g.baseDiff.value])) as Record<Grade, number>,
     freightIndex: 1,
   };
@@ -119,6 +125,7 @@ export function initFactors(world: WorldState, init: FactorInit, regime: Regime)
   base.hhPrompt = Math.exp(a.logHh);
   base.ttfPrompt = Math.exp(a.logTtf);
   base.dubaiEW = a.dubaiEW;
+  base.jkmPremium = a.jkmPremium;
   base.gradeDiffs = a.gradeDiffs;
   base.freightIndex = a.freightIndex;
   base.spread1 = { ...a.spread1, ...(init.spread1 ?? {}) };
@@ -137,14 +144,15 @@ export function volSurface(world: WorldState, regime: Regime, releaseProximity: 
 /** Implied vol for a tenor (months) with a mild downward term structure and a put skew in vol points per 10% moneyness. */
 export function impliedVolAt(front: number, tauMonths: number, moneyness = 0): number {
   const term = 1 / Math.sqrt(1 + 0.15 * Math.max(0, tauMonths - 1));
-  const skew = -0.08 * moneyness * 10; // puts richer: 0.8 vol points per 1% below the forward
-  return Math.max(0.05, front * term + skew * 0.01);
+  const skew = -0.08 * moneyness * 10; // puts richer: 0.8 vol points per 1% below the forward (skew is in vol units: 0.008 per 1%)
+  return Math.max(0.05, front * term + skew);
 }
 
 export interface HourStep { hour: number; day: number; regime: Regime; releaseProximity: number }
 
 /** One trading hour of price dynamics. Returns new factors. Daily-published factors (datedDiff) are updated in stepFactorsDaily. */
-export function stepFactorsHourly(f: Factors, world: WorldState, s: Stream, refs: Required<Pick<FactorInit, "brentRef" | "hhRef" | "ttfRef">>, step: HourStep): Factors {
+/** `gas` is a second stream for the factors added in milestone 4 (JKM), so the draws of the earlier factors, and every checked-in par, are unchanged. */
+export function stepFactorsHourly(f: Factors, world: WorldState, s: Stream, refs: Required<Pick<FactorInit, "brentRef" | "hhRef" | "ttfRef">>, step: HourStep, gas: Stream = s): Factors {
   const F = FACTORS;
   const a = anchors(world, f, refs, step.day);
   const w = hourWeights[step.hour];
@@ -169,16 +177,18 @@ export function stepFactorsHourly(f: Factors, world: WorldState, s: Stream, refs
   const fuelOilCrack = ouH(f.fuelOilCrack, a.fuelOilCrack, F.crackMeanReversionPerDay.value, F.crackNoisePerDay.value * 0.6);
   const eurusd = f.eurusd * Math.exp(F.fxVol.value * sqrtH * w * s.normal());
   const dubaiEW = ouH(f.dubaiEW, a.dubaiEW, 0.1, 0.1);
+  const ouG = (x: number, target: number, thetaDay: number, noiseDay: number) => x + (thetaDay / 24) * (target - x) + (noiseDay / Math.sqrt(24)) * w * gas.normal();
+  const jkmPremium = Math.max(0.2, ouG(f.jkmPremium, a.jkmPremium, 0.1, 0.03));
   const gradeDiffs = {} as Record<Grade, number>;
-  for (const g of Object.keys(a.gradeDiffs) as Grade[]) gradeDiffs[g] = ouH(f.gradeDiffs[g] ?? a.gradeDiffs[g], a.gradeDiffs[g], 0.1, 0.04);
+  for (const g of Object.keys(a.gradeDiffs) as Grade[]) gradeDiffs[g] = g === "LNG" ? a.gradeDiffs[g] : ouH(f.gradeDiffs[g] ?? a.gradeDiffs[g], a.gradeDiffs[g], 0.1, 0.04); // LNG's FOB differential is the tolling fee: no noise, no draw
   const freightIndex = Math.max(0.3, ouH(f.freightIndex, a.freightIndex, 0.15, 0.02));
   const spread1 = {} as Record<InstrumentId, number>;
   for (const inst of ALL_INSTRUMENTS) {
-    const scale = inst === "RBOB" || inst === "ULSD" ? 1 / 42 : inst === "HH" ? 0.05 : inst === "TTF" ? 0.5 : 1;
-    const price = inst === "BRENT" ? brentPrompt : inst === "WTI" ? brentPrompt - bw : inst === "RBOB" ? (brentPrompt - bw + gasolineCrack) / 42 : inst === "ULSD" ? (brentPrompt - bw + dieselCrack) / 42 : inst === "HH" ? hhPrompt : inst === "DUBAI" ? brentPrompt - dubaiEW : ttfPrompt;
+    const scale = inst === "RBOB" || inst === "ULSD" ? 1 / 42 : inst === "HH" || inst === "JKM" ? 0.05 : inst === "TTF" ? 0.5 : 1;
+    const price = inst === "BRENT" ? brentPrompt : inst === "WTI" ? brentPrompt - bw : inst === "RBOB" ? (brentPrompt - bw + gasolineCrack) / 42 : inst === "ULSD" ? (brentPrompt - bw + dieselCrack) / 42 : inst === "HH" ? hhPrompt : inst === "DUBAI" ? brentPrompt - dubaiEW : inst === "JKM" ? ttfUsdMmbtu(ttfPrompt, eurusd) + jkmPremium : ttfPrompt;
     const carry = fullCarry(inst, price, world.baseRate);
     const noise = F.spreadNoisePerDay.value * scale * (vol[inst] / 0.3);
-    let x = ouH(f.spread1[inst], a.spread1[inst], F.spreadMeanReversionPerDay.value, noise);
+    let x = (inst === "JKM" ? ouG : ouH)(f.spread1[inst], a.spread1[inst], F.spreadMeanReversionPerDay.value, noise);
     // contango is bounded by full carry: above 90% of carry the pull back is strong, and never beyond carry plus the noise band,
     // except at tank tops where the bound is 1.3x carry (super-contango, stylised)
     const tankTops = (inst === "WTI" ? world.usInvGap : inst === "BRENT" ? world.oecdInvGap : 0) > 40;
@@ -189,7 +199,7 @@ export function stepFactorsHourly(f: Factors, world: WorldState, s: Stream, refs
     x = Math.max(x, -F.maxBackwardation.value * scale);
     spread1[inst] = x;
   }
-  return { ...f, brentPrompt, hhPrompt, ttfPrompt, bw, gasolineCrack, dieselCrack, fuelOilCrack, eurusd, dubaiEW, spread1, vol, gradeDiffs, freightIndex };
+  return { ...f, brentPrompt, hhPrompt, ttfPrompt, bw, gasolineCrack, dieselCrack, fuelOilCrack, eurusd, dubaiEW, jkmPremium, spread1, vol, gradeDiffs, freightIndex };
 }
 
 /** Daily publications: Dated minus front, from prompt tightness. */
@@ -213,6 +223,7 @@ export function priceParts(f: Factors, inst: InstrumentId, tau: number): PricePa
     case "HH": parts = { flat: f.hhPrompt, time_spread: structure(f.spread1.HH, tau) }; break;
     case "TTF": parts = { flat: f.ttfPrompt, time_spread: structure(f.spread1.TTF, tau) }; break;
     case "DUBAI": parts = { flat: f.brentPrompt, basis: -f.dubaiEW, time_spread: structure(f.spread1.DUBAI, tau) }; break;
+    case "JKM": parts = { flat: ttfUsdMmbtu(f.ttfPrompt, f.eurusd), basis: f.jkmPremium, time_spread: structure(f.spread1.JKM, tau) }; break;
   }
   const price = Object.values(parts).reduce((a, b) => a + b, 0);
   return { price, parts };
@@ -223,18 +234,18 @@ export function roundToTick(x: number, tick: number): number {
 }
 
 /** The bid, ask and depth of one contract from its mid, the listed-month index, the hour and the regime. */
-export function makeQuote(inst: InstrumentId, month: string, mid: number, monthIdx: number, hour: number, regime: Regime, open: boolean, at: number, impact: number): Quote {
+export function makeQuote(inst: InstrumentId, month: string, mid: number, monthIdx: number, hour: number, regime: Regime, open: boolean, at: number, impact: number, depthScale = 1): Quote {
   const spec = INSTRUMENTS[inst];
   const L = LIQUIDITY;
   const hourSpread = L.hourSpread.value[hour];
   const spreadTicks = Math.max(1, Math.round(spec.baseSpreadTicks.value * Math.pow(1 + L.monthSpreadGrowth.value, monthIdx) * hourSpread * L.regimeSpread.value[regime]));
-  const depth = Math.max(1, Math.round((spec.baseDepthLots.value * Math.pow(L.monthDepthDecay.value, monthIdx) * L.regimeDepth.value[regime]) / hourSpread));
+  const depth = Math.max(1, Math.round((spec.baseDepthLots.value * Math.pow(L.monthDepthDecay.value, monthIdx) * L.regimeDepth.value[regime] * (monthIdx >= 2 ? depthScale : 1)) / hourSpread));
   const half = (spreadTicks * spec.tick) / 2;
   const bid = roundToTick(mid - half, spec.tick);
   const ask = roundToTick(mid + half, spec.tick);
   const impactNote = Math.abs(impact) > spec.tick / 2 ? `; includes ${impact >= 0 ? "+" : ""}${impact.toFixed(spec.decimals)} of your own order impact, decaying` : "";
   const why = open
-    ? `Mid ${mid.toFixed(spec.decimals)} from the factor model${impactNote}. Spread ${spreadTicks} tick${spreadTicks > 1 ? "s" : ""} (month ${monthIdx + 1} of 12, hour ${hour}:00 UTC, ${regime} regime). Depth ${depth} lots each side at the touch.`
+    ? `Mid ${mid.toFixed(spec.decimals)} from the factor model${impactNote}. Spread ${spreadTicks} tick${spreadTicks > 1 ? "s" : ""} (month ${monthIdx + 1} of 12, hour ${hour}:00 UTC, ${regime} regime). Depth ${depth} lots each side at the touch${monthIdx >= 2 && depthScale < 1 ? ` (back months thin in this level: depth x${depthScale})` : ""}.`
     : `Market closed (weekend or holiday): last mid ${mid.toFixed(spec.decimals)}; orders rest until the open.`;
   return { inst, month, mid, bid: Math.max(bid, spec.tick), ask: Math.max(ask, spec.tick * 2), depth, spreadTicks, at, open, why };
 }

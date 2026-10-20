@@ -15,7 +15,7 @@ import { testLevel } from "./helpers";
 
 const P = "p1";
 const ALL_UNLOCKS: Action["type"][] = ["order", "spread", "roll", "close", "cancel_order", "draw_line", "repay_line", "post_margin", "convert_fx", "open_card", "ask_mentor", "answer_drill", "answer_quiz", "end_level", "request_limit", "accept_tender", "decline_tender", "fix_charter", "instruct_ship", "efp", "settle_claim", "contest_claim", "open_lc", "insure", "counter_tender", "lease_tank", "store_cargo", "blend", "release_tank"];
-const LOOSE = { var95: 50e6, netLots: { BRENT: 5000, WTI: 5000, RBOB: 5000, ULSD: 5000, HH: 5000, TTF: 5000, DUBAI: 5000 }, grossLots: 10000, stopLoss: 100e6, drawdown: 120e6, concentration: 50 };
+const LOOSE = { var95: 50e6, netLots: { BRENT: 5000, WTI: 5000, RBOB: 5000, ULSD: 5000, HH: 5000, TTF: 5000, DUBAI: 5000, JKM: 5000 }, grossLots: 10000, stopLoss: 100e6, drawdown: 120e6, concentration: 50 };
 const tier3 = (id: number, extra: Partial<Parameters<typeof testLevel>[0]> = {}) => testLevel({ id, days: 40, startDate: "2027-03-01", capital: 50e6, creditLine: 400e6, instruments: ["BRENT", "WTI", "DUBAI"], unlocks: ALL_UNLOCKS, limits: LOOSE, ...extra });
 
 function run(spec: ReturnType<typeof testLevel>, seed: number, policy: (s: State) => Action[], maxTicks?: number) {

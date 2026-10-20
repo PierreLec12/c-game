@@ -3,7 +3,8 @@
  * issue tenders and quote freight; ratings, memory and defaults arrive in milestone 3. Every counterparty
  * implements the same two calls (quote, decide) so a human could stand in later (section 3.5).
  */
-import { COUNTERPARTIES, GRADES, PORTS, SHIPPING, VESSEL_CLASSES, type Basis, type Grade } from "./world_data";
+import { COUNTERPARTIES, GRADES, PORTS, SHIPPING, VESSEL_CLASSES, unitOfGrade, type Basis, type Grade } from "./world_data";
+import { LNG } from "./refdata";
 import type { Incoterm, State, Tender, WindowSpec } from "./types";
 import type { Stream } from "./rng";
 import { HOURS_PER_DAY } from "./calendar";
@@ -31,6 +32,11 @@ export interface TenderTemplate {
 /** The market's fair differential for a grade on these terms: the grade grid, plus freight and insurance for a delivered price. */
 export function fairDiff(state: State, grade: Grade, incoterm: Incoterm, port: string, basis: Basis, bbl?: number): number {
   const g = GRADES[grade];
+  if (grade === "LNG") {
+    // FOB at the plant: Henry Hub plus the tolling fee; delivered at a terminal: the local market less the regas fee and a buyer's margin (stylised)
+    if (incoterm === "FOB") return Math.round(LNG.liquefactionFee.value * 100) / 100;
+    return -Math.round((LNG.regasFee.value + LNG.buyerMargin.value) * 100) / 100;
+  }
   let diff = state.factors.gradeDiffs[grade];
   if (basis !== g.benchmark) {
     // translate between benchmarks at today's spreads
@@ -67,7 +73,7 @@ export function issueTender(state: State, t: TenderTemplate, s: Stream): Tender 
   const tender: Tender = {
     id: `T${++state.counters.tender}`, counterparty: t.counterparty, side: t.side, grade: t.grade, bbl: t.bbl ?? grade.cargoKb * 1000, incoterm: t.incoterm, port: t.port, basis, window: t.window, diff,
     laycan: [t.laycanStart, t.laycanStart + laycanDays], openedTick: state.tick, expiresTick: state.tick + (t.openHours ?? 48), status: "open",
-    note: (t.note ?? (t.side === "offer" ? `${cp.name} offers ${grade.name}, ${t.incoterm} ${PORTS[t.port].name}, laycan days ${t.laycanStart}-${t.laycanStart + laycanDays}, ${basis} ${diff >= 0 ? "+" : ""}${diff.toFixed(2)}, ${windowLabel(t.window)}.` : `${cp.name} bids for ${grade.name}, ${t.incoterm} ${PORTS[t.port].name}, discharge days ${t.laycanStart}-${t.laycanStart + laycanDays}, ${basis} ${diff >= 0 ? "+" : ""}${diff.toFixed(2)}, ${windowLabel(t.window)}.`)) + (t.requiresLc ? " A letter of credit is required before loading." : "") + (t.prepayDiscount ? ` Prepay and the differential drops by ${t.prepayDiscount.toFixed(2)}.` : ""),
+    note: (t.note ?? (t.side === "offer" ? `${cp.name} offers ${grade.name}, ${(t.bbl ?? grade.cargoKb * 1000).toLocaleString()} ${unitOfGrade(t.grade)}, ${t.incoterm} ${PORTS[t.port].name}, laycan days ${t.laycanStart}-${t.laycanStart + laycanDays}, ${basis} ${diff >= 0 ? "+" : ""}${diff.toFixed(2)}, ${windowLabel(t.window)}.` : `${cp.name} bids for ${grade.name}, ${(t.bbl ?? grade.cargoKb * 1000).toLocaleString()} ${unitOfGrade(t.grade)}, ${t.incoterm} ${PORTS[t.port].name}, discharge days ${t.laycanStart}-${t.laycanStart + laycanDays}, ${basis} ${diff >= 0 ? "+" : ""}${diff.toFixed(2)}, ${windowLabel(t.window)}.`)) + (t.requiresLc ? " A letter of credit is required before loading." : "") + (t.prepayDiscount ? ` Prepay and the differential drops by ${t.prepayDiscount.toFixed(2)}.` : ""),
     trap: t.trap ?? null, fairDiff: fair, requiresLc: t.requiresLc ?? false, prepayDiscount: t.prepayDiscount ?? 0, countered: null, declineReason: null,
   };
   state.tenders.push(tender);

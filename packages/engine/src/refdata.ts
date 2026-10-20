@@ -26,7 +26,7 @@ export const CONVERSIONS = {
 };
 
 // ---------------------------------------------------------------- instruments
-export type InstrumentId = "BRENT" | "WTI" | "RBOB" | "ULSD" | "HH" | "TTF" | "DUBAI";
+export type InstrumentId = "BRENT" | "WTI" | "RBOB" | "ULSD" | "HH" | "TTF" | "DUBAI" | "JKM";
 export type Family = "crude" | "products" | "gas";
 
 export interface InstrumentSpec {
@@ -71,6 +71,9 @@ export const INSTRUMENTS: Record<InstrumentId, InstrumentSpec> = {
   DUBAI: { id: "DUBAI", name: "Dubai swap", family: "crude", unit: "$/bbl", lot: 1000, lotUnit: "bbl", tick: 0.01, currency: "USD", decimals: 2,
     initialMarginShare: S(0.08, "section 14: crude 8%"), fee: S(2.0, "an OTC swap cleared: a little more than a future"), dailyVolumeLots: S(40000, "order of magnitude; thinner than Brent"), baseSpreadTicks: S(3, "three ticks: a swap market"),
     baseDepthLots: S(25, "lots at the touch"), expiryRule: "swap", firstDeliveryMonthOffset: 0 },
+  JKM: { id: "JKM", name: "JKM swap", family: "gas", unit: "$/MMBtu", lot: 10000, lotUnit: "MMBtu", tick: 0.005, currency: "USD", decimals: 3,
+    initialMarginShare: S(0.18, "between HH and TTF: 18%"), fee: S(2.0, "an OTC swap cleared"), dailyVolumeLots: S(15000, "thin: an Asian LNG marker"), baseSpreadTicks: S(4, "four ticks"),
+    baseDepthLots: S(10, "lots at the touch"), expiryRule: "swap", firstDeliveryMonthOffset: 0 },
 };
 
 export const TTF_LOT_NOTE = S(720, "the prompt says 1 MWh per lot-unit; the game trades a stylised 720 MWh lot (1 MW for a 30-day month) so a lot is a sensible size on screen. Recorded as a deviation.");
@@ -103,7 +106,7 @@ export const CLOCK = {
 
 // ---------------------------------------------------------------- volatility regimes
 export const VOL_REGIMES = S({ calm: 0.2, normal: 0.3, stressed: 0.55, crisis: 0.9 }, "section 14: annualised 20%, 30%, 55%, 90%");
-export const INSTRUMENT_VOL_MULT = S({ BRENT: 1.0, WTI: 1.05, RBOB: 1.3, ULSD: 1.2, HH: 1.8, TTF: 2.0, DUBAI: 1.0 }, "relative volatility by instrument: gas is wilder than crude");
+export const INSTRUMENT_VOL_MULT = S({ BRENT: 1.0, WTI: 1.05, RBOB: 1.3, ULSD: 1.2, HH: 1.8, TTF: 2.0, DUBAI: 1.0, JKM: 1.9 }, "relative volatility by instrument: gas is wilder than crude");
 export const STUDENT_T_DOF = S(4, "section 5.2: daily log returns have fat tails, Student-t with 4 degrees of freedom");
 
 // ---------------------------------------------------------------- storage and carry
@@ -174,7 +177,7 @@ export const FACTORS = {
   ttfAnchor: S(35, "EUR/MWh base"),
   ttfPerTwhGap: S(0.01, "log TTF falls 1% per TWh of EU storage surplus"),
   ttfPerHdd: S(0.015, "log TTF rises 1.5% per HDD anomaly"),
-  jkmPremium: S(1.5, "$/MMBtu Asian premium over TTF"),
+  jkmPremium: S(1.5, "$/MMBtu Asian premium over TTF; widens when LNG arrivals thin"),
   fxVol: S(0.06, "EURUSD annualised vol"),
   geoMeanReversionPerDay: S(0.05, "the geopolitics index decays 5% of its excess a day"),
   volGeoElasticity: S(0.6, "implied and realised vol rise 60% when geo goes from 0 to 1"),
@@ -194,3 +197,42 @@ export const STRESS_SHOCKS = S(
   [[-0.1, 0], [-0.05, 0], [0.05, 0], [0.1, 0], [0, 0.05], [0, -0.05], [-0.1, 0.05], [0.1, 0.05]] as [number, number][],
   "price and vol shocks, as c-terminal's book panel"
 );
+
+export const OPTIONS = {
+  volSpreadPoints: S(1.0, "an option trades at model value with one vol point either side (stylised vol spread)"),
+  depthLots: S(20, "lots at the touch on an option, stylised"),
+  strikeStep: S({ BRENT: 1, WTI: 1, RBOB: 0.05, ULSD: 0.05, HH: 0.1, TTF: 1, DUBAI: 1, JKM: 0.25 }, "listed strike spacing, stylised"),
+  strikesEachSide: S(8, "listed strikes either side of the forward"),
+  expiryBusinessDaysBeforeFuture: S(3, "an option expires three business days before its future (stylised; ICE Brent options expire a few days before)"),
+  shortMarginDeltaFloor: S(0.25, "initial margin on a short option: the notional share times at least a quarter delta (stylised)"),
+  futuresStyle: "options are margined like futures: no premium changes hands at the fill, variation margin settles daily (ICE Brent style, stylised)",
+};
+export const REFINERY = {
+  capacityKbd: S(100, "the prompt says 200 kb/d; the plant is 100 kb/d so a month's crack hedge fits the screen's liquidity (deviation recorded)"),
+  opexPerBbl: S(3.0, "$/bbl of operating cost, stylised"),
+  jetOverDiesel: S(2.0, "$/bbl jet premium over diesel, stylised; there is no jet contract"),
+  deliveredCrudePerBbl: S({ WTI_MIDLAND: 1.0, ARAB_LIGHT: 2.5 }, "$/bbl to bring crude to the plant by slate: a pipeline barrel from the Permian, a VLCC from the Gulf, stylised"),
+  fixedCostPerBblCapacityDay: S(1.0, "$/bbl of capacity a day of fixed cost, paid whether the plant runs or not, stylised"),
+  slateSwitchHours: S(24, "a slate change takes effect at the next day's run (stylised)"),
+  yields: S({ WTI_MIDLAND: { gasoline: 0.48, diesel: 0.30, jet: 0.10, fuelOil: 0.08, loss: 0.04 }, ARAB_LIGHT: { gasoline: 0.40, diesel: 0.30, jet: 0.08, fuelOil: 0.18, loss: 0.04 } }, "fixed yield vectors by slate, stylised"),
+  turnaroundRuns: S(0.5, "runs capped at half during maintenance"),
+};
+export const LNG = {
+  cargoMmbtu: S(3600000, "174,000 m3 is about 3.6 TBtu"),
+  liquefactionFee: S(2.5, "$/MMBtu tolling fee at the plant, stylised"),
+  hhMultiplier: S(1.15, "FOB US LNG prices at 115% of Henry Hub plus the fee, stylised"),
+  regasFee: S(0.5, "$/MMBtu at the terminal, stylised"),
+  buyerMargin: S(0.1, "$/MMBtu a terminal buyer keeps under the hub price, stylised"),
+  insurancePerMmbtu: S(0.01, "marine cargo insurance per MMBtu, stylised"),
+  regasWaitDays: S(3, "days a ship waits for a slot that was not booked"),
+  boilOffPerDay: S(0.001, "a tenth of a percent of the cargo a day, stylised"),
+  shippingPerMmbtuNote: "hire times days over the cargo's MMBtu",
+  mmbtuPerM3: S(3600000 / 174000, "about 20.7 MMBtu per cubic metre of LNG"),
+};
+export const SIGNALS = {
+  feedCostUsd: S(75000, "the assessment and signals feed for one level, stylised"),
+  transitsBaseline: S(70, "tankers a day through Hormuz, stylised baseline"),
+  clusterBaseline: S(6, "tankers at anchor off Fujairah on a normal day, stylised"),
+  hotspotBaseline: S(2, "confident hotspots a day over a refinery complex, stylised"),
+  hddBaseline: S(0, "heating-degree-day anomaly for the next seven days, stylised"),
+};

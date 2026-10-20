@@ -45,6 +45,7 @@ export interface Factors {
   eurusd: number;
   dubaiEW: number; // Brent minus Dubai
   datedDiff: number; // Dated Brent minus the front future, published daily
+  jkmPremium: number; // JKM over TTF in $/MMBtu: the Asian premium
   spread1: Record<InstrumentId, number>; // front monthly spread, price units per month (positive = contango)
   vol: Record<InstrumentId, number>; // annualised implied vol at the front
   gradeDiffs: Record<Grade, number>; // market differential of each grade versus its benchmark, $/bbl
@@ -75,7 +76,7 @@ export interface Quote {
   why: string;
 }
 
-export type LegTag = "outright" | "time_spread" | "inter_commodity" | "crack" | "roll" | "hedge" | "forced" | "expiry";
+export type LegTag = "outright" | "time_spread" | "inter_commodity" | "crack" | "roll" | "hedge" | "forced" | "expiry" | "signal" | "option";
 
 export interface Lot {
   id: string;
@@ -90,6 +91,8 @@ export interface Lot {
   base: Record<string, number>;
   baseFx: number; // EURUSD at the base (TTF only)
   lastMark: number; // contract price at the last settle (or entry)
+  /** an option on the futures month: kind, strike, its own expiry, and the inputs at the last mark for the Greek attribution */
+  option?: { kind: "call" | "put"; strike: number; expiryTick: number; base: { F: number; sigma: number; T: number } };
 }
 
 export interface Order {
@@ -103,6 +106,7 @@ export interface Order {
   price?: number; // limit or stop price
   tag: LegTag;
   packageId?: string;
+  option?: { kind: "call" | "put"; strike: number };
   placedTick: number;
   status: "resting" | "filled" | "cancelled" | "refused";
 }
@@ -121,6 +125,7 @@ export interface Fill {
   fees: number; // USD
   tag: LegTag;
   packageId?: string;
+  option?: { kind: "call" | "put"; strike: number; iv: number };
 }
 
 export type LedgerKind = "capital" | "variation_margin" | "initial_margin" | "margin_release" | "fee" | "line_draw" | "line_repay" | "interest" | "fx" | "liquidation" | "drill" | "other";
@@ -158,8 +163,10 @@ export interface AttributionRow {
   text: string;
   lotId?: string;
   packageId?: string;
+  greek?: Greek; // an options row: which Greek this part of the move was
 }
-export type AttributionLeg = "flat" | "basis" | "time_spread" | "crack" | "fees_slippage" | "fx" | "finance" | "options" | "freight" | "demurrage" | "storage" | "quality" | "credit";
+export type AttributionLeg = "flat" | "basis" | "time_spread" | "crack" | "fees_slippage" | "fx" | "finance" | "options" | "freight" | "demurrage" | "storage" | "quality" | "credit" | "refinery";
+export type Greek = "delta" | "gamma" | "vega" | "theta" | "other";
 
 export interface RiskLimits {
   var95: number; // USD
@@ -168,6 +175,7 @@ export interface RiskLimits {
   stopLoss: number; // USD, level P&L below -stopLoss loses a life
   drawdown: number; // USD, from the peak
   concentration: number; // the most one counterparty may be exposed for, as a multiple of capital (50 or more: no limit)
+  nakedShortOptions?: number; // lots of short options not covered by the underlying (absent: no limit)
 }
 
 export interface RiskState {
@@ -354,6 +362,8 @@ export interface Cargo {
   tankId: string | null; // in storage: the tank the oil sits in
   parcelId: string | null;
   cancelled: { tick: number; by: string; reason: string } | null;
+  regasBooked: boolean; // LNG: a regasification slot at the discharge terminal
+  boilOffUsd: number; // LNG: cargo lost to boil-off on the voyage, booked at discharge
 }
 export interface Tender {
   id: string;
@@ -406,6 +416,40 @@ export interface Voyage {
   trail: [number, number, number][]; // [tick, lon, lat], the last two days
 }
 export interface ChokepointState { id: string; status: "open" | "restricted" | "closed"; since: number; note: string }
+export interface Refinery {
+  capacityKbd: number;
+  runs: number; // share of capacity, 0 to 1
+  slate: Grade;
+  shutUntil: number | null; // a hurricane or a fire
+  maintenanceUntil: number | null; // a turnaround: runs capped at 0.5
+  marginUsd: number; // realised since the level began
+  daysRun: number;
+  history: { day: number; runs: number; crudeBbl: number; marginUsd: number; marginPerBbl: number; crack321: number }[];
+  base: number; // the forward margin marked at the last settle (always 0: the plant's margin is realised daily)
+  pendingSlate: Grade | null; // a slate change takes effect at the next day's run
+}
+export interface Signal {
+  id: string;
+  kind: "tanker_cluster" | "transits" | "hotspot" | "cold_forecast";
+  label: string;
+  place: string;
+  lon: number;
+  lat: number;
+  unit: string;
+  baseline: number;
+  offset: number; // the shift the coming event puts into the series by the time it fires
+  cadenceHours: number; // 24 for a daily series, 1 for a hotspot feed
+  leadTicks: number; // how long before the event the series starts to move
+  eventId: string; // the scheduled event this series runs ahead of
+  eventTick: number;
+  firstMoveTick: number; // when the series left its baseline
+  headlineTick: number | null; // when the headline reached the screen
+  inst: InstrumentId; // the contract the signal bears on
+  direction: "up" | "down"; // the way that contract should move when the event lands
+  series: { tick: number; v: number }[];
+  lagNote: string;
+  what: string; // what the series can and cannot tell you
+}
 export interface LetterOfCredit { id: string; cargoId: string; beneficiary: string; faceUsd: number; feeUsd: number; openedTick: number; closedTick: number | null }
 export interface Parcel { id: string; grade: Grade | "BLEND"; label: string; bbl: number; api: number; sulphur: number; costPerBbl: number; cargoId: string | null; benchmark: Basis; base: Record<string, number> }
 export interface Tank {
@@ -465,6 +509,11 @@ export interface State {
   tanks: Tank[];
   counterparties: Record<string, CounterpartyState>;
   infoDelayHours: number; // tier knob: how long after a shock its headline arrives
+  refinery: Refinery | null;
+  signals: Signal[];
+  feedBought: boolean; // the assessment and signals feed costs money
+  fx0: number; // EURUSD at the level start: the base for the FX leg on EUR-priced cargo legs
+  depthScale: number; // tier knob: 1 = normal depth; thin back months in tier 4
   history: { factors: Factors; day: number }[]; // daily closes of the factors, oldest first (pre-history then live)
   counters: { lot: number; order: number; fill: number; ledger: number; news: number; cargo: number; tender: number; voyage: number; claim: number; lc: number; tank: number; parcel: number };
   pendingNewsDelay: number; // set while a delayed event fires: its headlines publish this many hours later
@@ -479,7 +528,8 @@ export type ActionType =
   | "open_card" | "ask_mentor" | "answer_drill" | "answer_quiz"
   | "end_level" | "request_limit"
   | "accept_tender" | "decline_tender" | "fix_charter" | "instruct_ship" | "efp" | "settle_claim" | "contest_claim"
-  | "open_lc" | "insure" | "counter_tender" | "lease_tank" | "store_cargo" | "blend" | "release_tank";
+  | "open_lc" | "insure" | "counter_tender" | "lease_tank" | "store_cargo" | "blend" | "release_tank"
+  | "option_order" | "option_strategy" | "set_runs" | "set_slate" | "book_regas" | "buy_feed";
 
 interface Base { player: PlayerId }
 export type Action =
@@ -507,6 +557,12 @@ export type Action =
   | (Base & { type: "store_cargo"; cargoId: string; tankId: string })
   | (Base & { type: "blend"; tankId: string; parcelIds: string[] })
   | (Base & { type: "release_tank"; tankId: string })
+  | (Base & { type: "option_order"; inst: InstrumentId; month: MonthKey; strike: number; kind: "call" | "put"; side: "buy" | "sell"; qty: number; tag?: LegTag })
+  | (Base & { type: "option_strategy"; name: "collar" | "put_spread" | "call_spread" | "straddle" | "strangle"; inst: InstrumentId; month: MonthKey; strikes: number[]; qty: number; side: "buy" | "sell"; tag?: LegTag })
+  | (Base & { type: "set_runs"; runs: number })
+  | (Base & { type: "set_slate"; grade: Grade })
+  | (Base & { type: "book_regas"; cargoId: string })
+  | (Base & { type: "buy_feed" })
   | (Base & { type: "fix_charter"; cargoId: string; vesselId: string })
   | (Base & { type: "instruct_ship"; cargoId: string; speedFactor?: number; passage?: "proceed" | "reroute"; anchorDays?: number })
   | (Base & { type: "efp"; cargoId: string; leg: "purchase" | "sale" })
@@ -523,7 +579,7 @@ export type EngineEventKind =
   | "fill" | "order_rested" | "order_cancelled" | "settle" | "session_close" | "margin_call" | "margin_met" | "liquidation"
   | "news" | "event" | "release" | "card" | "mentor" | "limit_warning" | "forced_reduction" | "life_lost"
   | "level_passed" | "level_failed" | "level_ended" | "expiry" | "drill" | "quiz" | "objective" | "pause"
-  | "tender" | "cargo" | "voyage" | "arrival" | "claim" | "chokepoint" | "finance" | "credit" | "storage" | "rumour";
+  | "tender" | "cargo" | "voyage" | "arrival" | "claim" | "chokepoint" | "finance" | "credit" | "storage" | "rumour" | "refinery" | "signal" | "option";
 
 export interface EngineEvent {
   kind: EngineEventKind;

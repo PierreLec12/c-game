@@ -8,7 +8,8 @@ import { ledger } from "./finance";
 import { publishNews } from "./information";
 import { CHOKEPOINT_SPECS, GRADES, PORTS, SHIPPING, VESSEL_CLASSES } from "./world_data";
 import { NODE_BY_ID, etaTick, positionAlong, repathFromHere, speedKn, voyageCargo, voyageVessel, blockedNodes, daysFor, greatCircleNm, shortestPath, passageOptions } from "./shipping";
-import { chargeCargo, onBillOfLading, onDischarged, remarkCargo, cancelCargo } from "./physical";
+import { chargeCargo, onBillOfLading, onDischarged, remarkCargo, cancelCargo, legMark, expectedSaleParts, unitOf } from "./physical";
+import { LNG } from "./refdata";
 import { COUNTERPARTIES } from "./world_data";
 import type { AttributionRow, EngineEvent, State, Voyage } from "./types";
 
@@ -73,7 +74,7 @@ export function stepVoyages(state: State): { events: EngineEvent[]; rows: Attrib
           v.status = "laden"; v.legIndex = 1; v.nmDone = 0; v.legs[1].depTick = state.tick;
           v.eta = etaTick(state, v);
           rows.push(...remarkCargo(state, cargo, "bill of lading"));
-          events.push({ kind: "voyage", tick: state.tick, text: `Bill of lading signed: ${name} loaded ${cargo.bbl.toLocaleString()} bbl at ${PORTS[cargo.loadPort].name}. The purchase prices over ${cargo.purchase.windowDays!.map((d) => `day ${d}`).join(", ")}. ETA ${PORTS[cargo.dischargePort].name} ${formatClock(state.startDay, v.eta)}.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id } });
+          events.push({ kind: "voyage", tick: state.tick, text: `Bill of lading signed: ${name} loaded ${cargo.bbl.toLocaleString()} ${unitOf(cargo)} at ${PORTS[cargo.loadPort].name}. The purchase prices over ${cargo.purchase.windowDays!.map((d) => `day ${d}`).join(", ")}. ETA ${PORTS[cargo.dischargePort].name} ${formatClock(state.startDay, v.eta)}.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id } });
         }
         break;
       }
@@ -138,10 +139,12 @@ function tenderNor(state: State, v: Voyage, events: EngineEvent[], name: string)
   v.norTick = state.tick;
   const congestion = state.portCongestion[cargo.dischargePort] ?? 0;
   const windowStart = cargo.dischargeWindow ? cargo.dischargeWindow[0] * HOURS_PER_DAY : state.tick;
-  v.berthTick = Math.max(state.tick, congestion, windowStart) + 6;
+  // an LNG carrier without a booked regasification slot waits for one (stylised): laytime runs while it waits
+  const regasWait = cargo.grade === "LNG" && !cargo.regasBooked ? LNG.regasWaitDays.value * HOURS_PER_DAY : 0;
+  v.berthTick = Math.max(state.tick, congestion, windowStart) + 6 + regasWait;
   v.status = "waiting_berth"; vessel.status = "waiting";
   const wait = v.berthTick - state.tick;
-  events.push({ kind: "arrival", tick: state.tick, text: `${name} tendered notice of readiness at ${PORTS[cargo.dischargePort].name}. Berth in ${wait} hours${congestion > state.tick ? " (the port is congested)" : windowStart > state.tick ? " (ahead of the discharge window)" : ""}.`, data: { voyageId: v.id, cargoId: cargo.id }, pause: wait > 24 });
+  events.push({ kind: "arrival", tick: state.tick, text: `${name} tendered notice of readiness at ${PORTS[cargo.dischargePort].name}. Berth in ${wait} hours${regasWait ? ` (no regas slot was booked: the terminal fits the ship in after ${LNG.regasWaitDays.value} days)` : congestion > state.tick ? " (the port is congested)" : windowStart > state.tick ? " (ahead of the discharge window)" : ""}.`, data: { voyageId: v.id, cargoId: cargo.id }, pause: wait > 24 });
 }
 
 function complete(state: State, v: Voyage, events: EngineEvent[], rows: AttributionRow[], name: string): void {
@@ -159,14 +162,26 @@ function complete(state: State, v: Voyage, events: EngineEvent[], rows: Attribut
     rows.push(chargeCargo(state, cargo, "demurrage", dem, `${name}: ${over} hours over the ${SHIPPING.laytimeHours.value}-hour laytime at ${PORTS[cargo.dischargePort].name}: demurrage ${usd(dem)} at ${usd(v.hireUsdPerDay)} a day.`));
     events.push({ kind: "claim", tick: state.tick, text: `Demurrage: ${name} used ${used} hours against ${SHIPPING.laytimeHours.value} allowed at ${PORTS[cargo.dischargePort].name}: ${usd(dem)}.`, data: { cargoId: cargo.id, hours: over }, pause: true });
   }
+  if (cargo.grade === "LNG") {
+    // boil-off: a share of the cargo a day at sea is burned or lost; the receiver pays for what arrives (stylised)
+    const laden = v.legs.find((l) => l.kind === "laden");
+    const days = laden && laden.depTick !== null ? (state.tick - laden.depTick) / HOURS_PER_DAY : 0;
+    const share = LNG.boilOffPerDay.value * days;
+    const perUnit = cargo.sale ? legMark(state, cargo, cargo.sale).perBbl : expectedSaleParts(state, cargo).flat / cargo.bbl + 0;
+    const loss = share * cargo.bbl * Math.max(0, perUnit);
+    if (loss > 0) rows.push(chargeCargo(state, cargo, "boiloff", loss, `${name}: boil-off of ${(share * 100).toFixed(2)}% over ${days.toFixed(1)} days at sea (${LNG.boilOffPerDay.value * 100}% a day, stylised): ${Math.round(share * cargo.bbl).toLocaleString()} MMBtu not delivered, ${usd(loss)} at the sale price.`));
+    const regas = LNG.regasFee.value * cargo.bbl;
+    ledger(state, "other", -regas, `Regasification at ${PORTS[cargo.dischargePort].name}: ${LNG.regasFee.value.toFixed(2)} $/MMBtu on ${cargo.bbl.toLocaleString()} MMBtu${cargo.regasBooked ? " (slot booked)" : " (no slot booked: the ship waited for one)"}`);
+    rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "freight", amount: -regas, text: `${name}: regasification fee at ${PORTS[cargo.dischargePort].name}, ${LNG.regasFee.value.toFixed(2)} $/MMBtu (stylised).` });
+  }
   // freight and demurrage are paid at delivery
   ledger(state, "other", -v.lumpUsd, `Freight paid: ${vessel.name} voyage charter for ${GRADES[cargo.grade].name} ${cargo.id}`);
   cargo.freight.paidTick = state.tick;
   if (cargo.demurrageUsd > 0) { ledger(state, "other", -cargo.demurrageUsd, `Demurrage paid on ${GRADES[cargo.grade].name} ${cargo.id}`); cargo.demurragePaidTick = state.tick; }
   if (cargo.warRiskUsd > 0) { ledger(state, "other", -cargo.warRiskUsd, `War-risk premium paid on ${GRADES[cargo.grade].name} ${cargo.id}`); cargo.warRiskUsd = 0; cargo.extraCostsBase -= 0; }
   rows.push(...remarkCargo(state, cargo, "delivery"));
-  events.push({ kind: "arrival", tick: state.tick, text: `${name} discharged ${cargo.bbl.toLocaleString()} bbl at ${PORTS[cargo.dischargePort].name}. ${cargo.sale ? `The sale prices over ${cargo.sale.windowDays ? cargo.sale.windowDays.map((d) => `day ${d}`).join(", ") : "its window"}.` : "The cargo is unsold: it sits in the receiver's tank at the market price."} Freight ${usd(v.lumpUsd)} paid.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id } });
-  publishNews(state, { source: "wire", headline: `${vessel.name} discharged at ${PORTS[cargo.dischargePort].name}`, body: `${cargo.bbl.toLocaleString()} bbl of ${GRADES[cargo.grade].name}. The ship is released and available at ${PORTS[cargo.dischargePort].name}.` });
+  events.push({ kind: "arrival", tick: state.tick, text: `${name} discharged ${cargo.bbl.toLocaleString()} ${unitOf(cargo)} at ${PORTS[cargo.dischargePort].name}. ${cargo.sale ? `The sale prices over ${cargo.sale.windowDays ? cargo.sale.windowDays.map((d) => `day ${d}`).join(", ") : "its window"}.` : "The cargo is unsold: it sits in the receiver's tank at the market price."} Freight ${usd(v.lumpUsd)} paid.`, pause: true, data: { voyageId: v.id, cargoId: cargo.id } });
+  publishNews(state, { source: "wire", headline: `${vessel.name} discharged at ${PORTS[cargo.dischargePort].name}`, body: `${cargo.bbl.toLocaleString()} ${unitOf(cargo)} of ${GRADES[cargo.grade].name}. The ship is released and available at ${PORTS[cargo.dischargePort].name}.` });
 }
 
 /** A chokepoint closed: every laden voyage still due to pass it is re-routed from where it is. */

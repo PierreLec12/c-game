@@ -19,6 +19,10 @@ import { charterQuotes, etaTick, planLegs } from "./shipping";
 import { divert, passageDecision } from "./voyages";
 import { COUNTERPARTIES, GRADES, PORTS, SHIPPING } from "./world_data";
 import { formatClock } from "./calendar";
+import { STRATEGY_STRIKES, estimateOptionFill, executeOption, isListedStrike, listedStrikes, makeOptionOrder, optionExpiryTick, strategyLegs } from "./optionbook";
+import { SLATES, refineryMarginPerBbl } from "./refinery";
+import { OPTIONS, SIGNALS } from "./refdata";
+import { unitOf } from "./physical";
 
 const ALWAYS: Action["type"][] = ["open_card", "ask_mentor", "answer_drill", "answer_quiz", "end_level"];
 
@@ -235,6 +239,48 @@ export function validateAction(state: State, spec: LevelSpec, a: Action): string
       if (state.cargoes.some((c) => c.tankId === tank.id && c.sale && c.sale.paidTick === null)) return `tank ${tank.id} holds oil sold forward until that sale is delivered and paid`;
       return null;
     }
+    case "option_order": {
+      if (!state.level.instruments.includes(a.inst)) return `${INSTRUMENTS[a.inst]?.name ?? a.inst} is not traded in this level yet`;
+      const est = estimateOptionFill(state, a.inst, a.month, a.kind, a.strike, a.side, a.qty);
+      if (est.refusal) return est.refusal;
+      return marginCheck(state, [], [{ inst: a.inst, month: a.month, kind: a.kind, strike: a.strike, side: a.side, qty: a.qty }]);
+    }
+    case "option_strategy": {
+      if (!state.level.instruments.includes(a.inst)) return `${INSTRUMENTS[a.inst]?.name ?? a.inst} is not traded in this level yet`;
+      const need = STRATEGY_STRIKES[a.name];
+      if (need === undefined) return `unknown strategy ${a.name}`;
+      if (!Array.isArray(a.strikes) || a.strikes.length !== need) return `a ${a.name.replace("_", " ")} takes ${need} strike${need > 1 ? "s" : ""}`;
+      if (need === 2 && a.strikes[0] === a.strikes[1]) return "the two strikes must differ";
+      const legs = strategyLegs(a.name, a.strikes, a.side);
+      for (const l of legs) { const est = estimateOptionFill(state, a.inst, a.month, l.kind, l.strike, l.side, a.qty); if (est.refusal) return `${l.strike} ${l.kind}: ${est.refusal}`; }
+      return marginCheck(state, [], legs.map((l) => ({ inst: a.inst, month: a.month, kind: l.kind, strike: l.strike, side: l.side, qty: a.qty })));
+    }
+    case "set_runs": {
+      if (!state.refinery) return "there is no refinery in this level";
+      if (!(a.runs >= 0 && a.runs <= 1)) return "runs are a share of capacity between 0 and 1";
+      return null;
+    }
+    case "set_slate": {
+      if (!state.refinery) return "there is no refinery in this level";
+      if (!SLATES.includes(a.grade as (typeof SLATES)[number])) return `the plant runs ${SLATES.map((g) => GRADES[g].name).join(" or ")}`;
+      if (state.refinery.slate === a.grade && !state.refinery.pendingSlate) return `the plant is already on ${GRADES[a.grade].name}`;
+      return null;
+    }
+    case "book_regas": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      if (cargo.grade !== "LNG") return "regasification slots are for LNG cargoes";
+      if (cargo.regasBooked) return `${cargo.id} already has a slot at ${PORTS[cargo.dischargePort].name}`;
+      if (cargo.status === "delivered" || cargo.status === "discharging" || cargo.status === "cancelled") return `too late: ${cargo.id} is ${cargo.status}`;
+      const v = state.voyages.find((x) => x.id === cargo.voyageId);
+      if (v && v.norTick !== null) return "too late: the ship has tendered notice of readiness";
+      return null;
+    }
+    case "buy_feed": {
+      if (state.feedBought) return "the feed is already on";
+      if (state.finance.cashUSD + lineAvailable(state) < SIGNALS.feedCostUsd.value) return `the feed costs ${usd(SIGNALS.feedCostUsd.value)}; cash and line together cover ${usd(state.finance.cashUSD + lineAvailable(state))}`;
+      return null;
+    }
     case "request_limit": {
       if (!(a.value > 0)) return "the requested limit must be positive";
       if (!["var95", "grossLots", "netLots", "stopLoss"].includes(a.limit)) return "that limit cannot be changed";
@@ -265,12 +311,16 @@ function validateLeg(state: State, inst: InstrumentId, month: string, side: "buy
 }
 
 /** Would the initial margin after these fills be fundable from cash plus the line? */
-function marginCheck(state: State, legs: { inst: InstrumentId; month: string; side: "buy" | "sell"; qty: number }[]): string | null {
+function marginCheck(state: State, legs: { inst: InstrumentId; month: string; side: "buy" | "sell"; qty: number }[], options: { inst: InstrumentId; month: string; kind: "call" | "put"; strike: number; side: "buy" | "sell"; qty: number }[] = []): string | null {
   // approximate: add the legs as new lots at the mid and recompute the requirement on a shallow copy
   const probe: State = { ...state, lots: state.lots.map((l) => ({ ...l })) };
   for (const l of legs) {
     const q = state.quotes[ckey(l.inst, l.month)];
     probe.lots.push({ id: "probe", inst: l.inst, month: l.month, qty: l.side === "buy" ? l.qty : -l.qty, entry: q.mid, openedTick: state.tick, tag: "outright", base: {}, baseFx: state.factors.eurusd, lastMark: q.mid });
+  }
+  for (const o of options) {
+    const q = state.quotes[ckey(o.inst, o.month)];
+    probe.lots.push({ id: "probe", inst: o.inst, month: o.month, qty: o.side === "buy" ? o.qty : -o.qty, entry: 0, openedTick: state.tick, tag: "option", base: {}, baseFx: state.factors.eurusd, lastMark: 0, option: { kind: o.kind, strike: o.strike, expiryTick: optionExpiryTick(state, o.inst, o.month), base: { F: q.mid, sigma: 0.3, T: 0.1 } } });
   }
   const need = marginRequired(probe).total;
   const have = state.finance.marginAccount + state.finance.cashUSD + (state.finance.lineCut ? 0 : state.finance.lineLimit - state.finance.lineDrawn);
@@ -536,6 +586,46 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
       }
       break;
     }
+    case "option_order": {
+      const o = makeOptionOrder(state, a.player, a.inst, a.month, a.side, a.qty, a.kind, a.strike, a.tag ?? "option");
+      events.push(...fillOption(state, o));
+      break;
+    }
+    case "option_strategy": {
+      const pk = `opt${state.counters.order + 1}`;
+      for (const l of strategyLegs(a.name, a.strikes, a.side)) events.push(...fillOption(state, makeOptionOrder(state, a.player, a.inst, a.month, l.side, a.qty, l.kind, l.strike, a.tag ?? "option", pk)));
+      events.push({ kind: "option", tick: state.tick, text: `${a.side === "buy" ? "Bought" : "Sold"} ${a.qty} ${a.name.replace("_", " ")}${a.qty > 1 ? "s" : ""} on ${INSTRUMENTS[a.inst].name} ${monthLabel(a.month)} at ${a.strikes.join("/")}: ${strategyLegs(a.name, a.strikes, a.side).map((l) => `${l.side} ${l.strike} ${l.kind}`).join(", ")}.`, data: { packageId: pk } });
+      break;
+    }
+    case "set_runs": {
+      const r = state.refinery!;
+      r.runs = a.runs;
+      const m = refineryMarginPerBbl(state, r.slate);
+      events.push({ kind: "refinery", tick: state.tick, text: `Runs set to ${Math.round(a.runs * 100)}% of ${r.capacityKbd} kb/d: ${Math.round(r.capacityKbd * a.runs).toLocaleString()} kb/d of ${GRADES[r.slate].name} at ${m.perBbl.toFixed(2)} $/bbl of margin today (${usd(m.perBbl * r.capacityKbd * 1000 * a.runs)} a day before fixed costs).${r.shutUntil !== null && r.shutUntil > state.tick ? " The plant is shut: the setting applies when it restarts." : r.maintenanceUntil !== null && r.maintenanceUntil > state.tick ? " In turnaround: capped at 50% until it ends." : ""}` });
+      break;
+    }
+    case "set_slate": {
+      const r = state.refinery!;
+      r.pendingSlate = a.grade;
+      const m = refineryMarginPerBbl(state, a.grade);
+      const now = refineryMarginPerBbl(state, r.slate);
+      events.push({ kind: "refinery", tick: state.tick, text: `Slate change to ${GRADES[a.grade].name} from the next day's run: ${m.perBbl.toFixed(2)} $/bbl against ${now.perBbl.toFixed(2)} on ${GRADES[r.slate].name} at today's prices (${m.why})` });
+      break;
+    }
+    case "book_regas": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      cargo.regasBooked = true;
+      events.push({ kind: "cargo", tick: state.tick, text: `Regasification slot booked at ${PORTS[cargo.dischargePort].name} for ${cargo.id}: the ship berths on arrival instead of waiting ${LNG_WAIT} days. The fee (${LNG_FEE.toFixed(2)} $/MMBtu) is paid at discharge either way.`, data: { cargoId: cargo.id } });
+      break;
+    }
+    case "buy_feed": {
+      fund(state, SIGNALS.feedCostUsd.value);
+      ledger(state, "fee", -SIGNALS.feedCostUsd.value, "Assessment and signals feed for the level");
+      state.pnl.attribution.push({ tick: state.tick, inst: "BRENT", month: "", leg: "finance", amount: -SIGNALS.feedCostUsd.value, text: `The assessment and signals feed: ${usd(SIGNALS.feedCostUsd.value)} for the level (stylised). Information costs money; it pays when it is acted on before the headline.` });
+      state.feedBought = true;
+      events.push({ kind: "signal", tick: state.tick, text: `Feed on: ${state.signals.length} signal series are live on Intel and the Map.`, pause: true });
+      break;
+    }
     case "request_limit": {
       if (a.limit === "netLots") for (const k of Object.keys(state.risk.limits.netLots) as InstrumentId[]) state.risk.limits.netLots[k] = a.value;
       else (state.risk.limits as unknown as Record<string, number>)[a.limit] = a.value;
@@ -566,6 +656,24 @@ export function fillMarket(state: State, o: Order): EngineEvent[] {
 }
 
 export function netPositions(state: State): Record<InstrumentId, number> { return netLots(state); }
+const LNG_WAIT = 3;
+const LNG_FEE = 0.5;
+
+/** Execute an option order and book its consequences: fill, fees, lots, margin. */
+export function fillOption(state: State, o: Order): EngineEvent[] {
+  const { fill, refusal } = executeOption(state, o);
+  if (!fill) return [{ kind: "news", tick: state.tick, text: `Option order refused: ${refusal}` }];
+  const spec = INSTRUMENTS[fill.inst];
+  ledger(state, "fee", -fill.fees, `Fees on ${fill.qty} ${spec.name} ${monthLabel(fill.month)} ${fill.option!.strike} ${fill.option!.kind}${fill.qty > 1 ? "s" : ""}`);
+  state.pnl.fees += fill.fees;
+  state.pnl.attribution.push(feeRow(state, fill));
+  const { realised, rows } = applyFillToLots(state, fill);
+  state.pnl.attribution.push(...rows);
+  const notes = rebalanceMargin(state);
+  const text = `${fill.side === "buy" ? "Bought" : "Sold"} ${fill.qty} ${spec.name} ${monthLabel(fill.month)} ${fill.option!.strike} ${fill.option!.kind}${fill.qty > 1 ? "s" : ""} at ${fill.price.toFixed(spec.decimals)} (${(fill.option!.iv * 100).toFixed(1)}% vol${fill.slippage > 0 ? `, ${fill.slippage.toFixed(spec.decimals)} slippage` : ""}); fees $${fill.fees.toFixed(0)}${realised !== 0 ? `; realised ${usd(realised)}` : ""}${notes.length ? `; ${notes.join("; ")}` : ""}. Futures-style: no premium paid now; the value settles daily.`;
+  return [{ kind: "fill", tick: state.tick, text, data: { fillId: fill.id, inst: fill.inst, month: fill.month, side: fill.side, qty: fill.qty, price: fill.price, realised, option: fill.option } }];
+}
+void isListedStrike; void listedStrikes; void OPTIONS; void unitOf;
 
 /** Draw the line for a payment the cash cannot cover; the draw is the desk's and repays itself when cash returns. */
 function fund(state: State, amount: number): void {
