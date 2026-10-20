@@ -18,8 +18,9 @@ import { CLOCK, CONVERSIONS, FACTORS, INSTRUMENTS, INSTRUMENT_VOL_MULT, LIQUIDIT
 import type { Stream } from "./rng";
 import type { Factors, Quote, Regime, WorldState } from "./types";
 import { season } from "./calendar";
+import { GRADES, QUALITY_GRID, type Grade } from "./world_data";
 
-export const ALL_INSTRUMENTS: InstrumentId[] = ["BRENT", "WTI", "RBOB", "ULSD", "HH", "TTF"];
+export const ALL_INSTRUMENTS: InstrumentId[] = ["BRENT", "WTI", "RBOB", "ULSD", "HH", "TTF", "DUBAI"];
 
 export interface FactorInit { brentRef?: number; hhRef?: number; ttfRef?: number; eurusd?: number; spread1?: Partial<Record<InstrumentId, number>>; bw?: number; gasolineCrack?: number; dieselCrack?: number }
 
@@ -37,6 +38,7 @@ export function storageCostFor(inst: InstrumentId): number {
     case "RBOB": case "ULSD": return STORAGE_COST.ROTTERDAM.value / CONVERSIONS.GAL_PER_BBL.value;
     case "HH": return 0.08;
     case "TTF": return 0.9;
+    case "DUBAI": return STORAGE_COST.FUJAIRAH.value;
   }
 }
 
@@ -57,6 +59,10 @@ export function anchors(world: WorldState, f: Factors, refs: Required<Pick<Facto
   const logHh = Math.log(refs.hhRef) - F.hhPerBcfGap.value * world.gasStorageGap.us + F.hhPerHdd.value * world.hddAnomaly.us;
   const logTtf = Math.log(refs.ttfRef) - F.ttfPerTwhGap.value * world.gasStorageGap.eu + F.ttfPerHdd.value * world.hddAnomaly.eu - 0.05 * (world.lngArrivals - 1);
   const dubaiEW = F.dubaiEwBase.value + 2.0 * (world.geo - 0.2);
+  // grade differentials on the quality grid: a sour grade cheapens when fuel oil weakens
+  const gradeDiffs = {} as Record<Grade, number>;
+  for (const g of Object.values(GRADES)) gradeDiffs[g.id] = g.baseDiff.value + 0.08 * QUALITY_GRID.usdPerSulphurPct.value * (f.fuelOilCrack - F.fuelOilCrackBase.value) * g.sulphur;
+  const freightIndex = Math.max(0.4, Math.pow(world.freightDemand, 2));
   const spread1: Record<InstrumentId, number> = {
     BRENT: spreadTarget("BRENT", world.oecdInvGap, f.brentPrompt, world.baseRate),
     WTI: spreadTarget("WTI", world.usInvGap, f.brentPrompt - f.bw, world.baseRate),
@@ -64,8 +70,9 @@ export function anchors(world: WorldState, f: Factors, refs: Required<Pick<Facto
     ULSD: spreadTarget("ULSD", world.productInvGap.distillate, (f.brentPrompt - f.bw + f.dieselCrack) / 42, world.baseRate),
     HH: spreadTarget("HH", world.gasStorageGap.us / 40, f.hhPrompt, world.baseRate),
     TTF: spreadTarget("TTF", world.gasStorageGap.eu / 4, f.ttfPrompt, world.baseRate),
+    DUBAI: spreadTarget("DUBAI", world.oecdInvGap - 80 * (world.geo - 0.2), f.brentPrompt - f.dubaiEW, world.baseRate),
   };
-  return { logBrent, bw, gasolineCrack, dieselCrack, fuelOilCrack, logHh, logTtf, dubaiEW, spread1 };
+  return { logBrent, bw, gasolineCrack, dieselCrack, fuelOilCrack, logHh, logTtf, dubaiEW, spread1, gradeDiffs, freightIndex };
 }
 
 /** Target front spread from the inventory gap: contango bounded by full carry, backwardation steeper with tightness. */
@@ -96,8 +103,10 @@ export function initFactors(world: WorldState, init: FactorInit, regime: Regime)
   const base: Factors = {
     brentPrompt: brentRef, bw: init.bw ?? 2.5, gasolineCrack: init.gasolineCrack ?? 12, dieselCrack: init.dieselCrack ?? 22, fuelOilCrack: -9,
     hhPrompt: hhRef, ttfPrompt: ttfRef, eurusd: init.eurusd ?? 1.08, dubaiEW: 1.5, datedDiff: 0.2,
-    spread1: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0.02, TTF: 0.3 },
-    vol: { BRENT: 0.3, WTI: 0.3, RBOB: 0.3, ULSD: 0.3, HH: 0.3, TTF: 0.3 },
+    spread1: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0.02, TTF: 0.3, DUBAI: 0 },
+    vol: { BRENT: 0.3, WTI: 0.3, RBOB: 0.3, ULSD: 0.3, HH: 0.3, TTF: 0.3, DUBAI: 0.3 },
+    gradeDiffs: Object.fromEntries(Object.values(GRADES).map((g) => [g.id, g.baseDiff.value])) as Record<Grade, number>,
+    freightIndex: 1,
   };
   const a = anchors(world, base, { brentRef, hhRef, ttfRef }, 0);
   base.brentPrompt = Math.exp(a.logBrent);
@@ -108,6 +117,8 @@ export function initFactors(world: WorldState, init: FactorInit, regime: Regime)
   base.hhPrompt = Math.exp(a.logHh);
   base.ttfPrompt = Math.exp(a.logTtf);
   base.dubaiEW = a.dubaiEW;
+  base.gradeDiffs = a.gradeDiffs;
+  base.freightIndex = a.freightIndex;
   base.spread1 = { ...a.spread1, ...(init.spread1 ?? {}) };
   base.vol = volSurface(world, regime, 0);
   return base;
@@ -156,10 +167,13 @@ export function stepFactorsHourly(f: Factors, world: WorldState, s: Stream, refs
   const fuelOilCrack = ouH(f.fuelOilCrack, a.fuelOilCrack, F.crackMeanReversionPerDay.value, F.crackNoisePerDay.value * 0.6);
   const eurusd = f.eurusd * Math.exp(F.fxVol.value * sqrtH * w * s.normal());
   const dubaiEW = ouH(f.dubaiEW, a.dubaiEW, 0.1, 0.1);
+  const gradeDiffs = {} as Record<Grade, number>;
+  for (const g of Object.keys(a.gradeDiffs) as Grade[]) gradeDiffs[g] = ouH(f.gradeDiffs[g] ?? a.gradeDiffs[g], a.gradeDiffs[g], 0.1, 0.04);
+  const freightIndex = Math.max(0.3, ouH(f.freightIndex, a.freightIndex, 0.15, 0.02));
   const spread1 = {} as Record<InstrumentId, number>;
   for (const inst of ALL_INSTRUMENTS) {
     const scale = inst === "RBOB" || inst === "ULSD" ? 1 / 42 : inst === "HH" ? 0.05 : inst === "TTF" ? 0.5 : 1;
-    const price = inst === "BRENT" ? brentPrompt : inst === "WTI" ? brentPrompt - bw : inst === "RBOB" ? (brentPrompt - bw + gasolineCrack) / 42 : inst === "ULSD" ? (brentPrompt - bw + dieselCrack) / 42 : inst === "HH" ? hhPrompt : ttfPrompt;
+    const price = inst === "BRENT" ? brentPrompt : inst === "WTI" ? brentPrompt - bw : inst === "RBOB" ? (brentPrompt - bw + gasolineCrack) / 42 : inst === "ULSD" ? (brentPrompt - bw + dieselCrack) / 42 : inst === "HH" ? hhPrompt : inst === "DUBAI" ? brentPrompt - dubaiEW : ttfPrompt;
     const carry = fullCarry(inst, price, world.baseRate);
     const noise = F.spreadNoisePerDay.value * scale * (vol[inst] / 0.3);
     let x = ouH(f.spread1[inst], a.spread1[inst], F.spreadMeanReversionPerDay.value, noise);
@@ -170,7 +184,7 @@ export function stepFactorsHourly(f: Factors, world: WorldState, s: Stream, refs
     x = Math.max(x, -F.maxBackwardation.value * scale);
     spread1[inst] = x;
   }
-  return { ...f, brentPrompt, hhPrompt, ttfPrompt, bw, gasolineCrack, dieselCrack, fuelOilCrack, eurusd, dubaiEW, spread1, vol };
+  return { ...f, brentPrompt, hhPrompt, ttfPrompt, bw, gasolineCrack, dieselCrack, fuelOilCrack, eurusd, dubaiEW, spread1, vol, gradeDiffs, freightIndex };
 }
 
 /** Daily publications: Dated minus front, from prompt tightness. */
@@ -193,6 +207,7 @@ export function priceParts(f: Factors, inst: InstrumentId, tau: number): PricePa
     case "ULSD": parts = { flat: f.brentPrompt / g, basis: -f.bw / g, crack: f.dieselCrack / g, time_spread: structure(f.spread1.ULSD, tau) }; break;
     case "HH": parts = { flat: f.hhPrompt, time_spread: structure(f.spread1.HH, tau) }; break;
     case "TTF": parts = { flat: f.ttfPrompt, time_spread: structure(f.spread1.TTF, tau) }; break;
+    case "DUBAI": parts = { flat: f.brentPrompt, basis: -f.dubaiEW, time_spread: structure(f.spread1.DUBAI, tau) }; break;
   }
   const price = Object.values(parts).reduce((a, b) => a + b, 0);
   return { price, parts };

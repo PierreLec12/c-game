@@ -178,7 +178,7 @@ describe("margin, expiry and the risk manager", () => {
     expect(s.listed.BRENT.length).toBe(12);
   });
   it("warns, then reduces, then takes a life on three closes over the limit; a stop-loss takes a life and flattens", () => {
-    const spec = testLevel({ id: 952, days: 10, limits: { var95: 50000, netLots: { BRENT: 20, WTI: 20, RBOB: 20, ULSD: 20, HH: 20, TTF: 20 }, grossLots: 40, stopLoss: 3e6, drawdown: 4e6, concentration: 1 } });
+    const spec = testLevel({ id: 952, days: 10, limits: { var95: 50000, netLots: { BRENT: 20, WTI: 20, RBOB: 20, ULSD: 20, HH: 20, TTF: 20, DUBAI: 20 }, grossLots: 40, stopLoss: 3e6, drawdown: 4e6, concentration: 1 } });
     const s0 = newGame(spec, 8);
     const rng = makeRng(8);
     let s = applyActions(s0, [buy("BRENT", front(s0), 60)], rng).state;

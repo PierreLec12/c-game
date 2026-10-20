@@ -9,6 +9,11 @@ import type { EngineEvent, ScheduledEvent, State } from "./types";
 import { applyWorldShock } from "./world";
 import { publishNews, resolveNews } from "./information";
 import { dayOfTick } from "./calendar";
+import { issueTender, type TenderTemplate } from "./counterparties";
+import { rerouteAround } from "./voyages";
+import { raiseQualityClaim } from "./physical";
+import { CHOKEPOINT_SPECS, GRADES, PORTS, type Grade } from "./world_data";
+import type { WindowSpec } from "./types";
 
 export interface EventDef {
   kind: string;
@@ -152,6 +157,116 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
       jumpBrent(state, 0.03);
       const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, "Tanker seized in the Gulf; risk premium jumps"), body: str(ev.params.body, "Vol doubles; the prompt gaps higher; the risk manager will be on the phone."), eventId: ev.id });
       return [{ kind: "event", tick: state.tick, text: n.headline, pause: true }];
+    },
+  },
+
+  tender: {
+    kind: "tender", title: "A tender arrives",
+    fire(state, ev, s) {
+      const p = ev.params;
+      const window: WindowSpec = { kind: str(p.windowKind, "after_bl") as WindowSpec["kind"], days: num(p.windowDays, 5), deemedDay: typeof p.deemedDay === "number" ? p.deemedDay : undefined };
+      const t = issueTender(state, {
+        counterparty: str(p.counterparty, "NORTHSEA_MAJOR"), side: str(p.side, "offer") as "offer" | "bid", grade: str(p.grade, "FORTIES") as Grade, bbl: typeof p.bbl === "number" ? p.bbl : undefined,
+        incoterm: str(p.incoterm, "FOB") as "FOB" | "CIF" | "DES", port: str(p.port, "SULLOM_VOE"), basis: typeof p.basis === "string" ? (p.basis as TenderTemplate["basis"]) : undefined, window,
+        diffVsFair: num(p.diffVsFair, 0), laycanStart: num(p.laycanStart, 5), laycanDays: num(p.laycanDays, 2), openHours: num(p.openHours, 48), note: typeof p.note === "string" ? p.note : undefined, trap: typeof p.trap === "string" ? p.trap : undefined,
+      }, s);
+      publishNews(state, { source: "wire", headline: `${t.side === "offer" ? "Offer" : "Bid"}: ${GRADES[t.grade].name} ${t.incoterm} ${PORTS[t.port].name} at ${t.basis} ${t.diff >= 0 ? "+" : ""}${t.diff.toFixed(2)}`, body: t.note, eventId: ev.id });
+      return [{ kind: "tender", tick: state.tick, text: `${t.side === "offer" ? "Offer" : "Bid"} ${t.id}: ${t.note} Open ${Math.round((t.expiresTick - state.tick) / 24)} days.`, pause: true, data: { tenderId: t.id } }];
+    },
+  },
+  chokepoint: {
+    kind: "chokepoint", title: "Chokepoint status", card: "chokepoint_is_a_spread",
+    fire(state, ev) {
+      const id = str(ev.params.id, "BAB_EL_MANDEB");
+      const status = str(ev.params.status, "restricted") as "open" | "restricted" | "closed";
+      const spec = CHOKEPOINT_SPECS[id];
+      const prev = state.chokepoints[id]?.status ?? "open";
+      state.chokepoints[id] = { id, status, since: state.tick, note: str(ev.params.headline, `${spec.name} ${status}`) };
+      const shutting = status !== "open" && prev === "open";
+      const reopening = status === "open" && prev !== "open";
+      const scale = status === "closed" ? 1 : 0.6;
+      if (shutting) {
+        state.factors = { ...state.factors, freightIndex: state.factors.freightIndex * (1 + spec.freightShock.value * scale), dubaiEW: state.factors.dubaiEW + spec.ewShock.value * scale };
+        state.world = applyWorldShock(state.world, { geo: 0.15 * scale, eventIntensity: 0.5 }, { freightDemand: state.world.targets.freightDemand * (1 + spec.freightShock.value * 0.5 * scale) });
+        jumpBrent(state, 0.015 * scale);
+      }
+      if (reopening) state.world = applyWorldShock(state.world, {}, { freightDemand: 1 });
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `${spec.name} ${status}`), body: str(ev.params.body, `${spec.name} is now ${status}. ${spec.what}. Freight and the East-West spread reprice; ships bound through it ${status === "closed" ? "are rerouted" : "must wait for a convoy or go round"}.`), eventId: ev.id });
+      const events: EngineEvent[] = [{ kind: "chokepoint", tick: state.tick, text: n.headline, pause: true, data: { id, status } }];
+      if (status === "closed") events.push(...rerouteAround(state, id));
+      return events;
+    },
+  },
+  port_congestion: {
+    kind: "port_congestion", title: "Port congestion",
+    fire(state, ev) {
+      const port = str(ev.params.port, "ROTTERDAM");
+      const hours = num(ev.params.hours, 48);
+      state.portCongestion[port] = state.tick + hours;
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `${PORTS[port].name}: berths congested, ${Math.round(hours / 24)}-day queue`), body: str(ev.params.body, `Ships arriving at ${PORTS[port].name} wait about ${hours} hours for a berth. Laytime is 36 hours; a ship that arrives now pays demurrage. A ship that slows down arrives when the queue has cleared.`), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true, data: { port, hours } }];
+    },
+  },
+  port_strike: {
+    kind: "port_strike", title: "Port strike",
+    fire(state, ev) {
+      const port = str(ev.params.port, "ROTTERDAM");
+      const hours = num(ev.params.hours, 72);
+      state.portCongestion[port] = state.tick + hours;
+      state.world = applyWorldShock(state.world, { eventIntensity: 0.2 });
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `Strike shuts ${PORTS[port].name} berths for ${Math.round(hours / 24)} days`), body: str(ev.params.body, "Nothing loads or discharges until it ends; laytime keeps counting."), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true }];
+    },
+  },
+  quality_claim: {
+    kind: "quality_claim", title: "Quality claim", card: "basis_risk",
+    fire(state, ev) {
+      const cargo = [...state.cargoes].reverse().find((c) => c.status === "delivered" || c.status === "discharging");
+      if (!cargo) { ev.fired = false; ev.tick = state.tick + 24; return []; }
+      if (cargo.claims.some((c) => c.kind === "quality")) { ev.fired = true; return []; }
+      const usdPerBbl = num(ev.params.usdPerBbl, 0.35);
+      const claim = raiseQualityClaim(state, cargo, usdPerBbl, str(ev.params.text, `Sulphur tested ${(cargo.quality.sulphur + 0.06).toFixed(2)}% against a ${cargo.quality.sulphur.toFixed(2)}% specification.`));
+      return [{ kind: "claim", tick: state.tick, text: `Quality claim on ${GRADES[cargo.grade].name} ${cargo.id}: ${claim.text} ${claim.amountUsd >= 0 ? "$" + Math.round(claim.amountUsd).toLocaleString() : ""}. Settle or contest it on the Desk.`, pause: true, data: { cargoId: cargo.id, claimId: claim.id } }];
+    },
+  },
+  grade_diff_shock: {
+    kind: "grade_diff_shock", title: "Differential moves",
+    fire(state, ev) {
+      const grade = str(ev.params.grade, "BONNY_LIGHT") as Grade;
+      const delta = num(ev.params.delta, -0.8);
+      state.factors = { ...state.factors, gradeDiffs: { ...state.factors.gradeDiffs, [grade]: state.factors.gradeDiffs[grade] + delta } };
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `${GRADES[grade].name} differential ${delta < 0 ? "weakens" : "strengthens"} ${Math.abs(delta).toFixed(2)}`), body: str(ev.params.body, `${GRADES[grade].name} is now ${state.factors.gradeDiffs[grade] >= 0 ? "+" : ""}${state.factors.gradeDiffs[grade].toFixed(2)} over ${GRADES[grade].benchmark}. An unsold cargo of it is worth that much ${delta < 0 ? "less" : "more"} per barrel.`), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true }];
+    },
+  },
+  field_outage: {
+    kind: "field_outage", title: "Field outage",
+    fire(state, ev) {
+      const kbd = num(ev.params.kbd, 300);
+      state.world = applyWorldShock(state.world, { eventIntensity: 0.3, geo: 0.05 }, { crudeBalance: state.world.targets.crudeBalance - kbd });
+      jumpBrent(state, 0.01);
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `Field outage removes ${kbd} kb/d`), body: str(ev.params.body, "Prompt barrels are scarcer; the front spread and the Dated differential firm."), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true }];
+    },
+  },
+  tanker_seizure: {
+    kind: "tanker_seizure", title: "Tanker seized",
+    fire(state, ev) {
+      state.factors = { ...state.factors, freightIndex: state.factors.freightIndex * 1.15, dubaiEW: state.factors.dubaiEW + 0.6 };
+      state.world = applyWorldShock(state.world, { geo: 0.25, eventIntensity: 0.6 }, { freightDemand: state.world.targets.freightDemand * 1.08 });
+      jumpBrent(state, 0.025);
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, "Tanker seized in the Gulf of Oman; war-risk premiums jump"), body: str(ev.params.body, "Hire and insurance rise for anything transiting Hormuz; the East-West spread widens."), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: true }];
+    },
+  },
+  freight_shock: {
+    kind: "freight_shock", title: "Freight market moves",
+    fire(state, ev) {
+      const pct = num(ev.params.pct, 0.2);
+      state.factors = { ...state.factors, freightIndex: state.factors.freightIndex * (1 + pct) };
+      state.world = applyWorldShock(state.world, {}, { freightDemand: state.world.targets.freightDemand * (1 + pct / 2) });
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `Tanker rates ${pct > 0 ? "jump" : "fall"} ${Math.abs(Math.round(pct * 100))}%`), body: str(ev.params.body, "Voyage charters reprice for anyone who has not fixed yet."), eventId: ev.id });
+      return [{ kind: "news", tick: state.tick, text: n.headline, pause: false }];
     },
   },
 };

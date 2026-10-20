@@ -54,7 +54,7 @@ export function marginRequired(state: State): MarginBreakdown {
   }
   // inter-commodity offsets: opposite net positions in Brent and WTI, and crude versus products, pair off at 60%
   let offsets = 0;
-  const pairs: [InstrumentId, InstrumentId][] = [["BRENT", "WTI"], ["WTI", "RBOB"], ["WTI", "ULSD"], ["BRENT", "RBOB"], ["BRENT", "ULSD"]];
+  const pairs: [InstrumentId, InstrumentId][] = [["BRENT", "WTI"], ["BRENT", "DUBAI"], ["WTI", "RBOB"], ["WTI", "ULSD"], ["BRENT", "RBOB"], ["BRENT", "ULSD"]];
   const remaining = { ...net };
   for (const [a, b] of pairs) {
     const x = remaining[a] ?? 0;

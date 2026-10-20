@@ -10,6 +10,11 @@ import type { LevelSpec } from "./levels";
 import { ckey, estimateFill, executeMarket, makeOrder, restOrder } from "./liquidity";
 import { convertFx, drawLine, ledger, marginRequired, rebalanceMargin, repayLine } from "./finance";
 import { applyFillToLots, feeRow, netLots } from "./pnl";
+import { attachSale, cargoFromOffer, efpFix, legMark, remarkCargo, chargeCargo } from "./physical";
+import { charterQuotes, etaTick, planLegs } from "./shipping";
+import { divert, passageDecision } from "./voyages";
+import { COUNTERPARTIES, GRADES, PORTS, SHIPPING } from "./world_data";
+import { formatClock } from "./calendar";
 
 const ALWAYS: Action["type"][] = ["open_card", "ask_mentor", "answer_drill", "answer_quiz", "end_level"];
 
@@ -94,6 +99,69 @@ export function validateAction(state: State, spec: LevelSpec, a: Action): string
       return null;
     }
     case "end_level": return L.status === "running" ? null : "the level has already ended";
+    case "accept_tender": {
+      const t = state.tenders.find((x) => x.id === a.tenderId);
+      if (!t) return `no tender ${a.tenderId}`;
+      if (t.status !== "open") return `tender ${t.id} is ${t.status}`;
+      if (t.expiresTick <= state.tick) return `tender ${t.id} has expired`;
+      if (t.side === "offer") {
+        if (t.laycan[0] * 24 < state.tick) return "the laycan has already started";
+        return null;
+      }
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return "a bid needs one of your cargoes: pick the cargo to sell";
+      if (cargo.grade !== t.grade) return `${COUNTERPARTIES[t.counterparty].name} bids for ${GRADES[t.grade].name}, not ${GRADES[cargo.grade].name}`;
+      if (cargo.sale) return `${cargo.id} is already sold`;
+      if (cargo.status === "delivered" || cargo.status === "discharging") return `${cargo.id} has already been discharged`;
+      if (Math.abs(cargo.bbl - t.bbl) > 0.15 * t.bbl) return `the bid is for ${t.bbl.toLocaleString()} bbl; your cargo is ${cargo.bbl.toLocaleString()}`;
+      return null;
+    }
+    case "decline_tender": {
+      const t = state.tenders.find((x) => x.id === a.tenderId);
+      if (!t) return `no tender ${a.tenderId}`;
+      if (t.status !== "open") return `tender ${t.id} is ${t.status}`;
+      return null;
+    }
+    case "fix_charter": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      if (cargo.vesselId) return `${cargo.id} already has ${state.vessels.find((v) => v.id === cargo.vesselId)?.name}`;
+      const q = charterQuotes(state, cargo).find((x) => x.vesselId === a.vesselId);
+      if (!q) return "that vessel is not available";
+      if (!q.fits) return q.why.split(". ").slice(-1)[0];
+      if (q.etaLoadDay > cargo.laycan[1]) return `${q.vessel} would reach ${PORTS[cargo.loadPort].name} on day ${q.etaLoadDay}, after the laycan ends on day ${cargo.laycan[1]}`;
+      return null;
+    }
+    case "instruct_ship": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      const v = state.voyages.find((x) => x.id === cargo.voyageId);
+      if (!v || v.status === "done") return `${cargo.id} has no ship under way`;
+      if (a.speedFactor !== undefined && (a.speedFactor < SHIPPING.slowSteamMin.value || a.speedFactor > 1)) return `speed must be between ${Math.round(SHIPPING.slowSteamMin.value * 100)}% and 100% of service speed`;
+      if (a.passage !== undefined && v.status !== "waiting_chokepoint") return "the ship is not waiting at a passage";
+      if (a.passage !== undefined && v.waitUntil !== null) return "the ship is already waiting for its convoy; the decision is made";
+      if (a.anchorDays !== undefined && (a.anchorDays < 0 || a.anchorDays > 60)) return "anchor days must be between 0 and 60";
+      if (a.anchorDays !== undefined && (v.status === "discharging" || v.status === "waiting_berth")) return "too late to anchor: the ship has tendered notice of readiness";
+      return null;
+    }
+    case "efp": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      const leg = a.leg === "purchase" ? cargo.purchase : cargo.sale;
+      if (!leg) return `${cargo.id} has no ${a.leg} leg`;
+      if (leg.fixed !== null) return `the ${a.leg} is already priced`;
+      if (!leg.windowDays && a.leg === "purchase" && cargo.blTick === null) return "an EFP needs the window anchored: wait for the bill of lading";
+      return null;
+    }
+    case "settle_claim":
+    case "contest_claim": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      const claim = cargo.claims.find((c) => c.id === a.claimId);
+      if (!claim) return `no claim ${a.claimId}`;
+      if (claim.status !== "open") return `claim ${claim.id} is ${claim.status}`;
+      return null;
+    }
     case "request_limit": {
       if (!(a.value > 0)) return "the requested limit must be positive";
       if (!["var95", "grossLots", "netLots", "stopLoss"].includes(a.limit)) return "that limit cannot be changed";
@@ -153,10 +221,14 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
     case "spread": {
       const pk = `pk${state.counters.order + 1}`;
       const tag: LegTag = a.name === "time" ? "time_spread" : a.name === "inter" ? "inter_commodity" : "crack";
+      // a calendar spread trades in the spread book, which is deeper than the outright book (stylised: four times)
+      const saved: Record<string, typeof state.quotes[string]> = {};
+      if (a.name === "time") for (const l of a.legs) { const k = ckey(l.inst, l.month); saved[k] = state.quotes[k]; state.quotes[k] = { ...state.quotes[k], depth: state.quotes[k].depth * 4 }; }
       for (const l of a.legs) {
         const o = makeOrder(state, a.player, l.inst, l.month, l.side, l.qty, "market", undefined, tag, pk);
         events.push(...fillMarket(state, o));
       }
+      for (const [k, q] of Object.entries(saved)) state.quotes[k] = { ...state.quotes[k], depth: q.depth };
       break;
     }
     case "roll": {
@@ -210,6 +282,119 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
       break;
     }
     case "end_level": L.endTick = state.tick; break;
+    case "accept_tender": {
+      const t = state.tenders.find((x) => x.id === a.tenderId)!;
+      t.status = "accepted";
+      if (t.side === "offer") {
+        const cargo = cargoFromOffer(state, t);
+        state.cargoes.push(cargo);
+        const rows = remarkCargo(state, cargo, "accepted");
+        state.pnl.attribution.push(...rows);
+        const m = rows.reduce((x, r) => x + r.amount, 0);
+        const text = `Bought ${cargo.bbl.toLocaleString()} bbl of ${GRADES[cargo.grade].name} ${cargo.purchase.incoterm} ${PORTS[cargo.loadPort].name} from ${COUNTERPARTIES[t.counterparty].name} at ${t.basis} ${t.diff >= 0 ? "+" : ""}${t.diff.toFixed(2)}, laycan days ${t.laycan[0]}-${t.laycan[1]}. Marked at ${usd(m)} against the market (unsold, freight unfixed). Fix a ship on the Desk.`;
+        events.push({ kind: "cargo", tick: state.tick, text, data: { cargoId: cargo.id }, pause: true });
+      } else {
+        const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+        const before = cargo.dischargePort;
+        attachSale(state, cargo, t);
+        const v = state.voyages.find((x) => x.id === cargo.voyageId);
+        if (v && cargo.dischargePort !== before && v.status !== "done") events.push(...divert(state, v, cargo.dischargePort));
+        const rows = remarkCargo(state, cargo, "sold");
+        state.pnl.attribution.push(...rows);
+        events.push({ kind: "cargo", tick: state.tick, text: `Sold ${GRADES[cargo.grade].name} ${cargo.id} ${t.incoterm} ${PORTS[t.port].name} to ${COUNTERPARTIES[t.counterparty].name} at ${t.basis} ${t.diff >= 0 ? "+" : ""}${t.diff.toFixed(2)}, pricing ${cargo.sale!.window.kind === "after_discharge" ? `${cargo.sale!.window.days ?? 5} days after discharge` : cargo.sale!.window.kind === "after_bl" ? `${cargo.sale!.window.days ?? 5} days after B/L` : cargo.sale!.window.kind}. Discharge window days ${t.laycan[0]}-${t.laycan[1]}.`, data: { cargoId: cargo.id }, pause: true });
+      }
+      break;
+    }
+    case "decline_tender": {
+      const t = state.tenders.find((x) => x.id === a.tenderId)!;
+      t.status = "declined";
+      events.push({ kind: "tender", tick: state.tick, text: `Declined ${t.id} from ${COUNTERPARTIES[t.counterparty].name}.`, data: { tenderId: t.id } });
+      break;
+    }
+    case "fix_charter": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const q = charterQuotes(state, cargo).find((x) => x.vesselId === a.vesselId)!;
+      const vessel = state.vessels.find((v) => v.id === a.vesselId)!;
+      const legs = planLegs(state, vessel, cargo)!;
+      const voyage = { id: `V${++state.counters.voyage}`, vesselId: vessel.id, cargoId: cargo.id, legs, legIndex: 0, nmDone: 0, speedFactor: 1, status: "ballast" as const, hireUsdPerDay: q.hireUsdPerDay, lumpUsd: q.lumpUsd, eta: 0, blockedAt: null, waitUntil: null, anchorUntil: null, norTick: null, berthTick: null, detour: null, cleared: [], decision: null, loadEnd: null, dischargeEnd: null, trail: [] };
+      voyage.eta = etaTick(state, voyage);
+      state.voyages.push(voyage);
+      vessel.status = "ballast"; vessel.voyageId = voyage.id; vessel.atPort = null;
+      cargo.vesselId = vessel.id; cargo.voyageId = voyage.id; cargo.status = "fixed";
+      cargo.freight.fixedUsd = q.lumpUsd;
+      const rows = remarkCargo(state, cargo, "charter fixed");
+      state.pnl.attribution.push(...rows);
+      events.push({ kind: "voyage", tick: state.tick, text: `Fixed ${vessel.name} (${q.cls}, ${q.owner}) for ${GRADES[cargo.grade].name} ${cargo.id}: ${usd(q.lumpUsd)} lump sum, ${q.usdPerBbl.toFixed(2)} $/bbl. Ballast ${q.ballastDays.toFixed(1)} days to ${PORTS[cargo.loadPort].name} (day ${q.etaLoadDay}), laden ${q.ladenDays.toFixed(1)} days to ${PORTS[cargo.dischargePort].name}; ETA ${formatClock(state.startDay, voyage.eta)}.`, data: { cargoId: cargo.id, voyageId: voyage.id }, pause: true });
+      break;
+    }
+    case "instruct_ship": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const v = state.voyages.find((x) => x.id === cargo.voyageId)!;
+      const vessel = state.vessels.find((x) => x.id === v.vesselId)!;
+      if (a.speedFactor !== undefined) {
+        v.speedFactor = a.speedFactor;
+        v.eta = etaTick(state, v);
+        events.push({ kind: "voyage", tick: state.tick, text: `${vessel.name} now at ${Math.round(a.speedFactor * 100)}% of service speed. ETA ${formatClock(state.startDay, v.eta)}.`, data: { voyageId: v.id } });
+      }
+      if (a.anchorDays !== undefined) {
+        const arrival = v.status === "anchored" ? state.tick : etaTick(state, v);
+        v.anchorUntil = a.anchorDays > 0 ? arrival + a.anchorDays * 24 : null;
+        if (v.status === "anchored" && v.anchorUntil === null) v.anchorUntil = state.tick;
+        events.push({ kind: "voyage", tick: state.tick, text: a.anchorDays > 0 ? `${vessel.name} will hold at anchor off ${PORTS[cargo.dischargePort].name} for ${a.anchorDays} days after arrival: storage on water at ${usd(v.hireUsdPerDay)} a day.` : `${vessel.name} will tender notice of readiness on arrival.`, data: { voyageId: v.id } });
+      }
+      if (a.passage !== undefined) {
+        const r = passageDecision(state, v, a.passage);
+        state.pnl.attribution.push(...r.rows);
+        events.push(...r.events);
+      }
+      const rows = remarkCargo(state, cargo, "instruction");
+      state.pnl.attribution.push(...rows);
+      break;
+    }
+    case "efp": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const legBefore = a.leg === "purchase" ? cargo.purchase : cargo.sale!;
+      const m = legMark(state, cargo, legBefore);
+      const unpricedBbl = (cargo.bbl * m.unpriced.length) / m.n;
+      const r = efpFix(state, cargo, a.leg)!;
+      // the paper side: close futures of the same size at the mid, no spread crossed
+      const inst = legBefore.basis === "DUBAI" ? "DUBAI" : legBefore.basis === "WTI" ? "WTI" : "BRENT";
+      const month = state.listed[inst][0];
+      const net = netOf(state, inst, month);
+      const wanted = Math.round(unpricedBbl / 1000);
+      const closable = Math.min(wanted, Math.abs(net));
+      if (closable > 0) {
+        const q = state.quotes[ckey(inst, month)];
+        state.quotes[ckey(inst, month)] = { ...q, bid: q.mid, ask: q.mid, depth: 1e9 };
+        events.push(...fillMarket(state, makeOrder(state, a.player, inst, month, net > 0 ? "sell" : "buy", closable, "market", undefined, "hedge")));
+        state.quotes[ckey(inst, month)] = q;
+      }
+      const rows = remarkCargo(state, cargo, "EFP");
+      state.pnl.attribution.push(...rows);
+      events.push({ kind: "cargo", tick: state.tick, text: `EFP on ${GRADES[cargo.grade].name} ${cargo.id} ${a.leg}: ${Math.round(r.fixedBbl).toLocaleString()} bbl fixed at ${r.price.toFixed(2)} ${legBefore.basis}${closable > 0 ? `, ${closable} ${inst} lots exchanged at the mid` : ", no paper held against it"}.`, data: { cargoId: cargo.id }, pause: true });
+      break;
+    }
+    case "settle_claim": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const claim = cargo.claims.find((c) => c.id === a.claimId)!;
+      claim.status = "settled"; claim.resolvedTick = state.tick;
+      state.pnl.attribution.push(chargeCargo(state, cargo, "quality", claim.amountUsd, `${GRADES[cargo.grade].name} ${cargo.id}: ${claim.kind} claim from ${COUNTERPARTIES[claim.from]?.name ?? claim.from} settled for ${usd(claim.amountUsd)}.`));
+      events.push({ kind: "claim", tick: state.tick, text: `Settled the ${claim.kind} claim on ${cargo.id} for ${usd(claim.amountUsd)}.`, data: { cargoId: cargo.id } });
+      break;
+    }
+    case "contest_claim": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const claim = cargo.claims.find((c) => c.id === a.claimId)!;
+      const won = s.chance(0.5);
+      claim.resolvedTick = state.tick + 48;
+      if (won) { claim.status = "won"; claim.amountUsd = 0; events.push({ kind: "claim", tick: state.tick, text: `Contested the claim on ${cargo.id}: the inspector's re-test came back on spec. Claim withdrawn.`, data: { cargoId: cargo.id }, pause: true }); }
+      else {
+        claim.status = "lost"; claim.amountUsd = claim.amountUsd * 1.25;
+        state.pnl.attribution.push(chargeCargo(state, cargo, "quality", claim.amountUsd, `${GRADES[cargo.grade].name} ${cargo.id}: contested claim lost; paid ${usd(claim.amountUsd)} including the re-test and the receiver's costs.`));
+        events.push({ kind: "claim", tick: state.tick, text: `Contested the claim on ${cargo.id} and lost: ${usd(claim.amountUsd)} including costs.`, data: { cargoId: cargo.id }, pause: true });
+      }
+      break;
+    }
     case "request_limit": {
       if (a.limit === "netLots") for (const k of Object.keys(state.risk.limits.netLots) as InstrumentId[]) state.risk.limits.netLots[k] = a.value;
       else (state.risk.limits as unknown as Record<string, number>)[a.limit] = a.value;
@@ -219,7 +404,6 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
       break;
     }
   }
-  void s;
   return events;
 }
 

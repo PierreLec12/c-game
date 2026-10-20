@@ -7,6 +7,7 @@ import { priceParts } from "./markets";
 import { ckey } from "./liquidity";
 import { lotValueUsd } from "./finance";
 import { grossLots, netLots, tauOf } from "./pnl";
+import { physicalExposureBbl } from "./physical";
 import type { Fig, RiskLimits, State } from "./types";
 
 export interface VaRResult { level: number; loss: number; days: number; instruments: string[]; leftOut: string[]; worst: number }
@@ -46,20 +47,22 @@ export function historicalVar(exposure: Record<string, number>, prices: Record<s
 }
 
 /** Reconstructed historical closes for each contract the book holds, from the factor history at the contract's current tau. */
-export function contractCloses(state: State): Record<string, number[]> {
+export function contractCloses(state: State, keys?: string[]): Record<string, number[]> {
   const out: Record<string, number[]> = {};
-  for (const lot of state.lots) {
-    const k = ckey(lot.inst, lot.month);
+  const wanted = keys ?? state.lots.map((l) => ckey(l.inst, l.month));
+  for (const k of wanted) {
     if (out[k]) continue;
-    const tau = tauOf(state, lot.inst, lot.month);
-    out[k] = state.history.map((h) => priceParts(h.factors, lot.inst, tau).price);
+    const [inst, month] = k.split(":") as [InstrumentId, string];
+    const tau = tauOf(state, inst, month);
+    out[k] = state.history.map((h) => priceParts(h.factors, inst, tau).price);
   }
   return out;
 }
 
 /** The book's one-day VaR by historical simulation on the simulated closes. */
 export function bookVar(state: State): Fig | null {
-  if (state.lots.length === 0) return { v: 0, at: state.tick, why: "No open positions: VaR is zero." };
+  const phys = physicalExposureBbl(state);
+  if (state.lots.length === 0 && Math.abs(phys.bbl) < 1) return { v: 0, at: state.tick, why: "No open positions and no unpriced physical exposure: VaR is zero." };
   const exposure: Record<string, number> = {};
   const prices: Record<string, number> = {};
   for (const lot of state.lots) {
@@ -68,11 +71,17 @@ export function bookVar(state: State): Fig | null {
     const q = state.quotes[k];
     prices[k] = q ? q.mid : lot.lastMark;
   }
-  const closes = contractCloses(state);
+  if (Math.abs(phys.bbl) >= 1) {
+    // unpriced physical barrels behave like the front Brent contract for the simulation
+    const k = ckey("BRENT", state.listed.BRENT[0]);
+    exposure[k] = (exposure[k] ?? 0) + phys.bbl;
+    prices[k] = state.quotes[k]?.mid ?? state.factors.brentPrompt;
+  }
+  const closes = contractCloses(state, Object.keys(exposure));
   const res = historicalVar(exposure, prices, closes, [VAR.level.value], VAR.window.value);
   if (res.length === 0) return null;
   const r = res[0];
-  const keys = Object.keys(exposure).map((k) => `${k} (${Math.round(exposure[k] / INSTRUMENTS[k.split(":")[0] as InstrumentId].lot)} lots)`).join(", ");
+  const keys = Object.keys(exposure).map((k) => `${k} (${Math.round(exposure[k] / INSTRUMENTS[k.split(":")[0] as InstrumentId].lot)} lots${Math.abs(phys.bbl) >= 1 && k.startsWith("BRENT") ? `, of which ${Math.round(phys.bbl / 1000)} lots of unpriced physical` : ""})`).join(", ");
   return { v: r.loss, at: state.tick, why: `One-day 95% VaR by historical simulation: the loss not exceeded on 95% of the last ${r.days} simulated sessions, applying each session's return of every contract you hold to today's exposure (${keys}). Worst simulated day: $${Math.round(r.worst).toLocaleString()}.` };
 }
 

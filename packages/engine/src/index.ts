@@ -17,3 +17,8 @@ export * from "./levels";
 export * from "./engine";
 export * from "./conversions";
 export * from "./clone";
+export * from "./world_data";
+export * from "./shipping";
+export * from "./physical";
+export * from "./voyages";
+export * from "./counterparties";

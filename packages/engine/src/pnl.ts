@@ -45,6 +45,7 @@ export function attributeLot(state: State, lot: Lot, qty: number, price: number,
     let text: string;
     const dd = spec.decimals;
     if (leg === "flat") text = `${lot.inst === "WTI" || lot.inst === "RBOB" || lot.inst === "ULSD" ? "The crude flat price (Brent prompt)" : `${spec.name} flat price`} moved ${fmt(d, dd)} ${spec.unit} while you were ${side} ${Math.abs(qty)} lot${Math.abs(qty) > 1 ? "s" : ""} of ${name}: ${lot.tag === "hedge" ? "hedge leg" : "flat-price exposure"}.`;
+    else if (leg === "basis" && lot.inst === "DUBAI") text = `Brent minus Dubai moved ${fmt(-d, 2)} $/bbl on your ${side} ${Math.abs(qty)} lots of ${name}: the East-West spread.`;
     else if (leg === "basis") text = `Brent minus WTI moved ${fmt(-d * (lot.inst === "WTI" ? 1 : 42), 2)} $/bbl: your ${name} ${side} carries Brent-WTI basis.`;
     else if (leg === "crack") text = `The ${lot.inst === "RBOB" ? "gasoline" : "diesel"} crack moved ${fmt(d * 42, 2)} $/bbl on your ${side} ${Math.abs(qty)} lots of ${name}.`;
     else text = `Time structure on ${name} moved ${fmt(d, dd)} ${spec.unit} (front spread and roll-down as the contract neared expiry) while you were ${side} ${Math.abs(qty)} lots.`;
@@ -148,7 +149,7 @@ export function unrealised(state: State): number {
 }
 
 export function netLots(state: State): Record<InstrumentId, number> {
-  const out = { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0 } as Record<InstrumentId, number>;
+  const out = { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0 } as Record<InstrumentId, number>;
   for (const lot of state.lots) out[lot.inst] += lot.qty;
   return out;
 }
@@ -176,7 +177,7 @@ export function positions(state: State): PositionRow[] {
 }
 
 export function attributionTotals(rows: AttributionRow[]): Record<AttributionLeg, number> {
-  const out: Record<AttributionLeg, number> = { flat: 0, basis: 0, time_spread: 0, crack: 0, fees_slippage: 0, fx: 0, finance: 0, options: 0, freight: 0, storage: 0, quality: 0 };
+  const out: Record<AttributionLeg, number> = { flat: 0, basis: 0, time_spread: 0, crack: 0, fees_slippage: 0, fx: 0, finance: 0, options: 0, freight: 0, demurrage: 0, storage: 0, quality: 0 };
   for (const r of rows) out[r.leg] += r.amount;
   return out;
 }

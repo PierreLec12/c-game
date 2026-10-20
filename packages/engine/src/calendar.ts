@@ -78,7 +78,7 @@ export function parseMonthKey(key: string): { year: number; month: number } {
 const MONTH_CODES = ["F", "G", "H", "J", "K", "M", "N", "Q", "U", "V", "X", "Z"];
 export function contractCode(inst: InstrumentId, key: string): string {
   const { year, month } = parseMonthKey(key);
-  const prefix = { BRENT: "BRN", WTI: "CL", RBOB: "RB", ULSD: "HO", HH: "NG", TTF: "TFM" }[inst];
+  const prefix = { BRENT: "BRN", WTI: "CL", RBOB: "RB", ULSD: "HO", HH: "NG", TTF: "TFM", DUBAI: "DBS" }[inst];
   return `${prefix}${MONTH_CODES[month - 1]}${String(year % 100).padStart(2, "0")}`;
 }
 export function monthLabel(key: string): string {
@@ -111,6 +111,9 @@ export function expiryDay(inst: InstrumentId, key: string): number {
       return addBusinessDays(monthStart(year, month), -3);
     case "ttf":
       return addBusinessDays(monthStart(year, month), -2);
+    case "swap":
+      // a monthly swap settles on the month's average: it trades until the last business day of its month
+      return lastBusinessDayOfMonth(year, month);
   }
 }
 

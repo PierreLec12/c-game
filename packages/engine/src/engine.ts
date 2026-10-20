@@ -16,6 +16,13 @@ import { addRelease, publishNews, releaseProximity } from "./information";
 import { computeScore } from "./scoring";
 import { applyAction, fillMarket, validateAction } from "./actions";
 import { getLevel, type LevelSpec } from "./levels";
+import { initFleet } from "./shipping";
+import { cargoesMarkUsd, payDues, settlePhysical, physicalExposureBbl, physicalExposureAfterPrintsBbl } from "./physical";
+import { netLots } from "./pnl";
+import { stepVoyages } from "./voyages";
+import { expireTenders } from "./counterparties";
+import { CHOKEPOINTS } from "./refdata";
+import { COUNTERPARTIES } from "./world_data";
 import { clone } from "./clone";
 import type { Action, Contract, EngineEvent, Factors, Fill, LogEntry, Refusal, State, TickResult, WorldState } from "./types";
 
@@ -72,23 +79,24 @@ export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = 
   const a = anchors(world, snapped, refsOf(spec), startDay);
   const factors: Factors = { ...snapped, bw: a.bw, gasolineCrack: a.gasolineCrack, dieselCrack: a.dieselCrack, fuelOilCrack: a.fuelOilCrack, dubaiEW: a.dubaiEW, spread1: { ...a.spread1, ...(spec.factors.spread1 ?? {}) } };
   const state: State = {
-    version: 1, seed, tick: 0, startDay, world, factors, contracts: {}, listed: { BRENT: [], WTI: [], RBOB: [], ULSD: [], HH: [], TTF: [] }, quotes: {},
+    version: 1, seed, tick: 0, startDay, world, factors, contracts: {}, listed: { BRENT: [], WTI: [], RBOB: [], ULSD: [], HH: [], TTF: [], DUBAI: [] }, quotes: {},
     lots: [], orders: [], fills: [],
     finance: initFinance(spec.capital, spec.creditLine),
     pnl: { realised: 0, unrealised: 0, fees: 0, interest: 0, today: 0, total: 0, attribution: [], equityCurve: [], settles: [] },
     risk: {
-      var95: { v: 0, at: 0, why: "No open positions: VaR is zero." }, grossLots: 0, netLots: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0 },
+      var95: { v: 0, at: 0, why: "No open positions: VaR is zero." }, grossLots: 0, netLots: { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0 },
       limits: { ...spec.limits, netLots: { ...spec.limits.netLots } }, breaches: [], lives: spec.lives, livesLost: 0, messages: [], stress: [],
-      peakEquity: spec.capital, maxDrawdown: 0, closesInsideLimit: 0, closesTotal: 0, varBreachedAtClose: false, stopLossRef: 0, forcedReductions: 0,
+      peakEquity: spec.capital, maxDrawdown: 0, closesInsideLimit: 0, closesTotal: 0, varBreachedAtClose: false, stopLossRef: 0, forcedReductions: 0, closes: [],
     },
     news: [], releases: [], events: [],
+    cargoes: [], tenders: [], vessels: initFleet(), voyages: [], chokepoints: Object.fromEntries(CHOKEPOINTS.map((c) => [c.id, { id: c.id, status: "open" as const, since: 0, note: "open" }])), portCongestion: {},
     level: {
       id: spec.id, tier: spec.tier, title: spec.title, startDay, endTick: spec.days * HOURS_PER_DAY, status: "running",
       objectives: spec.objectives.map((o) => ({ id: o.id, text: o.text, status: "pending" })), cardsUnlocked: [], cardsOpened: [],
       drills: spec.drills ? spec.drills(seed) : [], quiz: [], score: null, par, unlockedActions: [...spec.unlocks], instruments: [...spec.instruments], endedTick: null, mentorLines: [],
     },
     history: pre.history,
-    counters: { lot: 0, order: 0, fill: 0, ledger: 0, news: 0 },
+    counters: { lot: 0, order: 0, fill: 0, ledger: 0, news: 0, cargo: 0, tender: 0, voyage: 0, claim: 0 },
     capital: spec.capital,
     paused: null,
   };
@@ -101,6 +109,7 @@ export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = 
   }
   refreshListings(state);
   rebuildQuotes(state, isTradingTick(startDay, 0));
+  state.risk.var95 = bookVar(state);
   updateObjectives(state, spec);
   state.pnl.equityCurve.push({ tick: 0, equity: spec.capital, pnl: 0, ...{} });
   recordCurve(state);
@@ -140,7 +149,7 @@ function rebuildQuotes(state: State, open: boolean): void {
 }
 
 function recordCurve(state: State): void {
-  const u = unrealised(state);
+  const u = unrealised(state) + cargoesMarkUsd(state);
   const eq = equity(state, u);
   state.pnl.unrealised = u;
   state.pnl.total = eq - state.capital;
@@ -258,6 +267,15 @@ export function tick(state: State, actions: Action[], rng: Rng): TickResult {
     const fills = matchResting(next);
     for (const f of fills) events.push(...bookFill(next, f));
   }
+  {
+    const v = stepVoyages(next);
+    events.push(...v.events);
+    next.pnl.attribution.push(...v.rows);
+    for (const t of expireTenders(next)) {
+      events.push({ kind: "tender", tick: next.tick, text: `Tender ${t.id} from ${COUNTERPARTIES[t.counterparty].name} expired${t.trap ? `. ${t.trap}` : "."}`, data: { tenderId: t.id } });
+    }
+    if (hour === 0) events.push(...payDues(next));
+  }
   if (isSettleTick(next.startDay, next.tick)) events.push(...settle(next, spec));
   next.risk.var95 = bookVar(next);
   recordCurve(next);
@@ -292,6 +310,7 @@ function usd(x: number): string { return (x < 0 ? "-$" : "$") + Math.abs(Math.ro
 
 function settle(state: State, spec: LevelSpec): EngineEvent[] {
   const events: EngineEvent[] = [];
+  const physBeforePrints = physicalExposureBbl(state).bbl;
   const settlePrices: Record<string, number> = {};
   for (const [key, q] of Object.entries(state.quotes)) {
     const c = state.contracts[key];
@@ -321,6 +340,11 @@ function settle(state: State, spec: LevelSpec): EngineEvent[] {
     }
     publishNews(state, { source: "exchange", headline: `${INSTRUMENTS[c.inst].name} ${monthLabel(c.month)} expired at ${c.settle!.v.toFixed(INSTRUMENTS[c.inst].decimals)}`, body: "Last trading day. The next month is now the front." });
   }
+  {
+    const ph = settlePhysical(state);
+    state.pnl.attribution.push(...ph.rows);
+    events.push(...ph.events);
+  }
   state.history.push({ factors: state.factors, day: dayOfTick(state.startDay, state.tick) });
   rebalanceMargin(state);
   // the margin call raised at the last close must be met by this one
@@ -335,18 +359,20 @@ function settle(state: State, spec: LevelSpec): EngineEvent[] {
     state.risk.messages.push({ tick: state.tick, text, severity: "breach" });
     events.push({ kind: "margin_call", tick: state.tick, text, pause: true, data: { amount: mc.amount } });
   } else if (mc.met) events.push({ kind: "margin_met", tick: state.tick, text: "Margin call met." });
-  state.pnl.settles.push({ tick: state.tick, pnl: equity(state, 0) - state.capital });
-  events.push(...riskAtClose(state, spec));
+  state.pnl.settles.push({ tick: state.tick, pnl: equity(state, cargoesMarkUsd(state)) - state.capital });
+  events.push(...riskAtClose(state, spec, physBeforePrints));
   events.push({ kind: "session_close", tick: state.tick, text: `Session close ${formatClock(state.startDay, state.tick)}: P&L today ${usd(state.pnl.today)}, level ${usd(equity(state, 0) - state.capital)}`, pause: true });
   return events;
 }
 
-function riskAtClose(state: State, spec: LevelSpec): EngineEvent[] {
+function riskAtClose(state: State, spec: LevelSpec, physBeforePrints?: number): EngineEvent[] {
   const events: EngineEvent[] = [];
   state.risk.var95 = bookVar(state);
   state.risk.stress = stressTable(state);
   recordCurve(state);
   state.risk.closesTotal += 1;
+  // the physical exposure a trader could have hedged by this close: the day's prints land at the settle itself
+  state.risk.closes.push({ tick: state.tick, physBbl: physBeforePrints ?? physicalExposureBbl(state).bbl, net: netLots(state), var95: state.risk.var95?.v ?? 0, pnl: state.pnl.total });
   const v = state.risk.var95;
   if (!v || v.v <= state.risk.limits.var95) state.risk.closesInsideLimit += 1;
   else state.risk.varBreachedAtClose = true;
@@ -450,10 +476,10 @@ function endLevel(state: State, spec: LevelSpec, status: "ended" | "failed"): En
 }
 
 /** Rebuild the state at the end of a log from the seed: the proof that the world is deterministic. */
-export function replay(seed: number, levelId: number, log: LogEntry[], untilTick?: number): State {
+export function replay(seed: number, levelId: number, log: LogEntry[], untilTick?: number, opts: { par?: number } = {}): State {
   const spec = getLevel(levelId);
   const rng = makeRng(seed);
-  let state = newGame(spec, seed);
+  let state = newGame(spec, seed, opts);
   const sorted = [...log].sort((a, b) => a.tick - b.tick);
   for (const entry of sorted) {
     while (state.tick < entry.tick && state.level.status === "running") state = tick(state, [], rng).state;
@@ -462,6 +488,38 @@ export function replay(seed: number, levelId: number, log: LogEntry[], untilTick
   }
   const target = untilTick ?? state.tick;
   while (state.tick < target && state.level.status === "running") state = tick(state, [], rng).state;
+  return state;
+}
+
+/** What-if replays (section 10): the same seed and log with every hedge removed, or with the unpriced barrels hedged one-for-one at every close. */
+export function whatIf(seed: number, levelId: number, log: LogEntry[], mode: "unhedged" | "fullhedge", untilTick?: number, opts: { par?: number } = {}): State {
+  const isHedge = (a: Action) => (a.type === "order" && a.tag === "hedge") || a.type === "efp";
+  const stripped = log.map((e) => ({ tick: e.tick, actions: e.actions.filter((a) => !isHedge(a)) })).filter((e) => e.actions.length);
+  if (mode === "unhedged") return replay(seed, levelId, stripped, untilTick, opts);
+  const spec = getLevel(levelId);
+  const rng = makeRng(seed);
+  let state = newGame(spec, seed, opts);
+  const sorted = [...stripped].sort((a, b) => a.tick - b.tick);
+  const overlay = (s: State): Action[] => {
+    if (!s.level.instruments.includes("BRENT") || !s.level.unlockedActions.includes("order")) return [];
+    const q = s.quotes[ckey("BRENT", s.listed.BRENT[0])];
+    if (!q || !q.open) return [];
+    const phys = physicalExposureAfterPrintsBbl(s);
+    const held = s.lots.filter((l) => l.inst === "BRENT").reduce((a, l) => a + l.qty, 0) * 1000;
+    const lots = Math.round((-phys - held) / 1000);
+    if (Math.abs(lots) < 5) return [];
+    const month = s.listed.BRENT[Math.min(1, s.listed.BRENT.length - 1)];
+    return [{ type: "order", player: "p1", inst: "BRENT", month, side: lots > 0 ? "buy" : "sell", qty: Math.min(250, Math.abs(lots)), kind: "market", tag: "hedge" }];
+  };
+  let i = 0;
+  const target = untilTick ?? (sorted.length ? sorted[sorted.length - 1].tick : 0);
+  while (state.level.status === "running" && state.tick < target) {
+    const acts: Action[] = [];
+    while (i < sorted.length && sorted[i].tick === state.tick) { acts.push(...sorted[i].actions); i += 1; }
+    acts.push(...overlay(state));
+    state = tick(state, acts, rng).state;
+  }
+  while (i < sorted.length && state.level.status !== "running") { state = applyActions(state, sorted[i].actions, rng).state; i += 1; }
   return state;
 }
 

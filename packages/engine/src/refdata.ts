@@ -26,7 +26,7 @@ export const CONVERSIONS = {
 };
 
 // ---------------------------------------------------------------- instruments
-export type InstrumentId = "BRENT" | "WTI" | "RBOB" | "ULSD" | "HH" | "TTF";
+export type InstrumentId = "BRENT" | "WTI" | "RBOB" | "ULSD" | "HH" | "TTF" | "DUBAI";
 export type Family = "crude" | "products" | "gas";
 
 export interface InstrumentSpec {
@@ -44,7 +44,7 @@ export interface InstrumentSpec {
   dailyVolumeLots: Stylised<number>; // front-month, for the block rule
   baseSpreadTicks: Stylised<number>; // front, normal regime, European hours
   baseDepthLots: Stylised<number>; // at the touch, each side
-  expiryRule: "brent" | "wti" | "products" | "hh" | "ttf";
+  expiryRule: "brent" | "wti" | "products" | "hh" | "ttf" | "swap";
   firstDeliveryMonthOffset: number; // months from a trade date's month to the first listed contract when nothing has expired
 }
 
@@ -68,6 +68,9 @@ export const INSTRUMENTS: Record<InstrumentId, InstrumentSpec> = {
   TTF: { id: "TTF", name: "TTF gas", family: "gas", unit: "EUR/MWh", lot: 720, lotUnit: "MWh", tick: 0.005, currency: "EUR", decimals: 3,
     initialMarginShare: S(0.20, "section 14: TTF 20%"), fee: S(1.2, "in USD equivalent"), dailyVolumeLots: S(40000, "order of magnitude"), baseSpreadTicks: S(2, "two ticks"),
     baseDepthLots: S(15, "lots at the touch"), expiryRule: "ttf", firstDeliveryMonthOffset: 1 },
+  DUBAI: { id: "DUBAI", name: "Dubai swap", family: "crude", unit: "$/bbl", lot: 1000, lotUnit: "bbl", tick: 0.01, currency: "USD", decimals: 2,
+    initialMarginShare: S(0.08, "section 14: crude 8%"), fee: S(2.0, "an OTC swap cleared: a little more than a future"), dailyVolumeLots: S(40000, "order of magnitude; thinner than Brent"), baseSpreadTicks: S(3, "three ticks: a swap market"),
+    baseDepthLots: S(25, "lots at the touch"), expiryRule: "swap", firstDeliveryMonthOffset: 0 },
 };
 
 export const TTF_LOT_NOTE = S(720, "the prompt says 1 MWh per lot-unit; the game trades a stylised 720 MWh lot (1 MW for a 30-day month) so a lot is a sensible size on screen. Recorded as a deviation.");
@@ -100,7 +103,7 @@ export const CLOCK = {
 
 // ---------------------------------------------------------------- volatility regimes
 export const VOL_REGIMES = S({ calm: 0.2, normal: 0.3, stressed: 0.55, crisis: 0.9 }, "section 14: annualised 20%, 30%, 55%, 90%");
-export const INSTRUMENT_VOL_MULT = S({ BRENT: 1.0, WTI: 1.05, RBOB: 1.3, ULSD: 1.2, HH: 1.8, TTF: 2.0 }, "relative volatility by instrument: gas is wilder than crude");
+export const INSTRUMENT_VOL_MULT = S({ BRENT: 1.0, WTI: 1.05, RBOB: 1.3, ULSD: 1.2, HH: 1.8, TTF: 2.0, DUBAI: 1.0 }, "relative volatility by instrument: gas is wilder than crude");
 export const STUDENT_T_DOF = S(4, "section 5.2: daily log returns have fat tails, Student-t with 4 degrees of freedom");
 
 // ---------------------------------------------------------------- storage and carry

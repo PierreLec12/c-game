@@ -31,6 +31,7 @@ export function initWorld(init: WorldInit = {}): WorldState {
     euGasGap: init.gasStorageGap?.eu ?? 0,
     hddUs: 0,
     hddEu: 0,
+    freightDemand: init.freightDemand ?? 1,
     ...(init.targets ?? {}),
   };
   return {
@@ -69,7 +70,7 @@ export function stepWorldDaily(w: WorldState, s: Stream, baseRegime: Regime, win
     fuelOil: ou(w.productInvGap.fuelOil, 0, 0.03, 0) + (refineryRuns - 0.9) * 3 + s.normal() * 0.1,
   };
   const geo = Math.min(1, Math.max(0, ou(w.geo, w.targets.geo, F.geoMeanReversionPerDay.value, s.normal() * 0.01)));
-  const freightDemand = ou(w.freightDemand, 1, 0.05, s.normal() * 0.01);
+  const freightDemand = ou(w.freightDemand, w.targets.freightDemand, 0.08, s.normal() * 0.01);
   const hddAnomaly = {
     us: ou(w.hddAnomaly.us, w.targets.hddUs, 0.25, s.normal() * 0.6),
     eu: ou(w.hddAnomaly.eu, w.targets.hddEu, 0.25, s.normal() * 0.6),

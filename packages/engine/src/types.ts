@@ -3,6 +3,7 @@
  * Nothing here knows about the screen.
  */
 import type { InstrumentId } from "./refdata";
+import type { Basis, Grade, VesselClass } from "./world_data";
 
 export type PlayerId = string;
 export type Regime = "calm" | "normal" | "stressed" | "crisis";
@@ -30,7 +31,7 @@ export interface WorldState {
   eventIntensity: number; // decays; raises vol and tightens liquidity
   baseRate: number; // annual, decimal
   /** scenario targets the latent state mean-reverts to (set by the level and moved by events) */
-  targets: { crudeBalance: number; geo: number; refineryRuns: number; usGasGap: number; euGasGap: number; hddUs: number; hddEu: number };
+  targets: { crudeBalance: number; geo: number; refineryRuns: number; usGasGap: number; euGasGap: number; hddUs: number; hddEu: number; freightDemand: number };
 }
 
 export interface Factors {
@@ -46,6 +47,8 @@ export interface Factors {
   datedDiff: number; // Dated Brent minus the front future, published daily
   spread1: Record<InstrumentId, number>; // front monthly spread, price units per month (positive = contango)
   vol: Record<InstrumentId, number>; // annualised implied vol at the front
+  gradeDiffs: Record<Grade, number>; // market differential of each grade versus its benchmark, $/bbl
+  freightIndex: number; // 1 = base hire; rises with tonne-mile demand and chokepoint shocks
 }
 
 export interface Contract {
@@ -156,7 +159,7 @@ export interface AttributionRow {
   lotId?: string;
   packageId?: string;
 }
-export type AttributionLeg = "flat" | "basis" | "time_spread" | "crack" | "fees_slippage" | "fx" | "finance" | "options" | "freight" | "storage" | "quality";
+export type AttributionLeg = "flat" | "basis" | "time_spread" | "crack" | "fees_slippage" | "fx" | "finance" | "options" | "freight" | "demurrage" | "storage" | "quality";
 
 export interface RiskLimits {
   var95: number; // USD
@@ -184,6 +187,7 @@ export interface RiskState {
   varBreachedAtClose: boolean;
   stopLossRef: number; // level P&L at the last life lost; the stop-loss measures from here
   forcedReductions: number;
+  closes: { tick: number; physBbl: number; net: Record<InstrumentId, number>; var95: number; pnl: number }[]; // one row per settle: what the book looked like at the close
 }
 
 export interface NewsItem {
@@ -292,6 +296,105 @@ export interface PnlState {
   settles: { tick: number; pnl: number }[];
 }
 
+
+// ---------------------------------------------------------------- physical: cargoes, tenders, ships
+export type Incoterm = "FOB" | "CIF" | "DES";
+/** A pricing window: which days' assessments average into the price. Day numbers are level days. */
+export interface WindowSpec { kind: "after_bl" | "after_discharge" | "month_avg_bl" | "deemed"; days?: number; deemedDay?: number }
+export interface CargoLeg {
+  counterparty: string;
+  basis: Basis;
+  window: WindowSpec;
+  diff: number; // contracted differential, $/bbl over the basis
+  incoterm: Incoterm;
+  port: string;
+  windowDays: number[] | null; // level days of the window once the anchor (B/L or discharge) is known
+  prints: Record<number, number>; // day -> the basis assessment that printed
+  fixed: number | null; // final price per bbl (basis average plus diff) once every day has printed
+  base: Record<string, number>; // USD by factor part over the unpriced days at the last mark
+  unpricedDays: number[]; // the days still unpriced at the last mark (empty when fully priced or not yet anchored)
+  marked: boolean; // false until the leg has been booked once (its first mark books the whole leg)
+  expectedAnchorDay: number; // the day the window is expected to anchor on, for marking before it is known
+  amountUsd: number | null; // the invoice once fixed
+  dueTick: number | null;
+  paidTick: number | null;
+}
+export interface Claim { id: string; tick: number; kind: "quality" | "demurrage"; from: string; amountUsd: number; text: string; status: "open" | "settled" | "contested" | "won" | "lost"; resolvedTick?: number }
+export type CargoStatus = "contracted" | "fixed" | "loading" | "laden" | "discharging" | "delivered" | "cancelled";
+export interface Cargo {
+  id: string;
+  tenderId: string;
+  grade: Grade;
+  bbl: number;
+  purchase: CargoLeg;
+  sale: CargoLeg | null;
+  status: CargoStatus;
+  loadPort: string;
+  dischargePort: string;
+  laycan: [number, number]; // level days
+  dischargeWindow: [number, number] | null; // level days the receiver's berth is held for
+  vesselId: string | null;
+  voyageId: string | null;
+  blTick: number | null;
+  dischargeTick: number | null;
+  quality: { api: number; sulphur: number };
+  claims: Claim[];
+  freight: { expectedUsd: number; fixedUsd: number | null; paidTick: number | null; base: number }; // base: the freight marked at the last settle (USD, positive cost)
+  demurrageUsd: number;
+  demurragePaidTick: number | null;
+  warRiskUsd: number;
+  extraCostsBase: number; // demurrage + war risk + claims marked at the last settle
+  marketBase: Record<string, number>; // for an unsold cargo: the expected sale value by part at the last mark
+  createdTick: number;
+}
+export interface Tender {
+  id: string;
+  counterparty: string;
+  side: "offer" | "bid"; // offer: they sell a cargo to you; bid: they buy a cargo from you
+  grade: Grade;
+  bbl: number;
+  incoterm: Incoterm;
+  port: string; // load port for an offer, discharge port for a bid
+  basis: Basis;
+  window: WindowSpec;
+  diff: number;
+  laycan: [number, number]; // level days (an offer); for a bid, the discharge window
+  openedTick: number;
+  expiresTick: number;
+  status: "open" | "accepted" | "expired" | "declined";
+  note: string; // what the counterparty says
+  trap: string | null; // what the mentor says afterwards if there was one (hidden until the tender closes)
+  fairDiff: number; // the market differential at issue, for the debrief
+}
+export interface Vessel { id: string; name: string; cls: VesselClass; owner: string; status: "available" | "ballast" | "loading" | "laden" | "discharging" | "waiting"; lon: number; lat: number; node: string; atPort: string | null; voyageId: string | null; age: number; speedFactor: number }
+export interface VoyageLeg { kind: "ballast" | "laden"; from: string; to: string; path: string[]; nm: number; depTick: number | null; arrTick: number | null }
+export type VoyageStatus = "ballast" | "waiting_laycan" | "loading" | "laden" | "waiting_chokepoint" | "waiting_berth" | "anchored" | "discharging" | "done";
+export interface Voyage {
+  id: string;
+  vesselId: string;
+  cargoId: string;
+  legs: VoyageLeg[];
+  legIndex: number;
+  nmDone: number; // along the current leg
+  speedFactor: number; // 1 = service speed; slow steaming below
+  status: VoyageStatus;
+  hireUsdPerDay: number;
+  lumpUsd: number; // the voyage charter as fixed
+  eta: number; // tick of arrival at the discharge port at the current speed and route
+  blockedAt: string | null; // chokepoint id the ship is waiting at
+  waitUntil: number | null;
+  anchorUntil: number | null;
+  norTick: number | null; // notice of readiness at the discharge port
+  berthTick: number | null;
+  detour: string | null;
+  cleared: string[]; // chokepoints this voyage has already been let through
+  decision: { chokepoint: string; choice: "proceed" | "reroute"; proceedUsd: number; rerouteUsd: number; tick: number } | null; // the last passage decision and what each option cost
+  loadEnd: number | null;
+  dischargeEnd: number | null;
+  trail: [number, number, number][]; // [tick, lon, lat], the last two days
+}
+export interface ChokepointState { id: string; status: "open" | "restricted" | "closed"; since: number; note: string }
+
 export interface State {
   version: 1;
   seed: number;
@@ -312,8 +415,14 @@ export interface State {
   releases: Release[];
   events: ScheduledEvent[];
   level: LevelState;
+  cargoes: Cargo[];
+  tenders: Tender[];
+  vessels: Vessel[];
+  voyages: Voyage[];
+  chokepoints: Record<string, ChokepointState>;
+  portCongestion: Record<string, number>; // port -> tick until which the berth is taken
   history: { factors: Factors; day: number }[]; // daily closes of the factors, oldest first (pre-history then live)
-  counters: { lot: number; order: number; fill: number; ledger: number; news: number };
+  counters: { lot: number; order: number; fill: number; ledger: number; news: number; cargo: number; tender: number; voyage: number; claim: number };
   capital: number;
   paused: { reason: string; tick: number } | null; // the last auto-pause the engine asked for
 }
@@ -323,7 +432,8 @@ export type ActionType =
   | "order" | "spread" | "roll" | "close" | "cancel_order"
   | "draw_line" | "repay_line" | "post_margin" | "convert_fx"
   | "open_card" | "ask_mentor" | "answer_drill" | "answer_quiz"
-  | "end_level" | "request_limit";
+  | "end_level" | "request_limit"
+  | "accept_tender" | "decline_tender" | "fix_charter" | "instruct_ship" | "efp" | "settle_claim" | "contest_claim";
 
 interface Base { player: PlayerId }
 export type Action =
@@ -341,7 +451,14 @@ export type Action =
   | (Base & { type: "answer_drill"; drillId: string; answer: number })
   | (Base & { type: "answer_quiz"; questionId: string; choice: number })
   | (Base & { type: "end_level" })
-  | (Base & { type: "request_limit"; limit: keyof RiskLimits; value: number });
+  | (Base & { type: "request_limit"; limit: keyof RiskLimits; value: number })
+  | (Base & { type: "accept_tender"; tenderId: string; cargoId?: string })
+  | (Base & { type: "decline_tender"; tenderId: string })
+  | (Base & { type: "fix_charter"; cargoId: string; vesselId: string })
+  | (Base & { type: "instruct_ship"; cargoId: string; speedFactor?: number; passage?: "proceed" | "reroute"; anchorDays?: number })
+  | (Base & { type: "efp"; cargoId: string; leg: "purchase" | "sale" })
+  | (Base & { type: "settle_claim"; cargoId: string; claimId: string })
+  | (Base & { type: "contest_claim"; cargoId: string; claimId: string });
 
 export interface Refusal {
   action: Action;
@@ -352,7 +469,8 @@ export interface Refusal {
 export type EngineEventKind =
   | "fill" | "order_rested" | "order_cancelled" | "settle" | "session_close" | "margin_call" | "margin_met" | "liquidation"
   | "news" | "event" | "release" | "card" | "mentor" | "limit_warning" | "forced_reduction" | "life_lost"
-  | "level_passed" | "level_failed" | "level_ended" | "expiry" | "drill" | "quiz" | "objective" | "pause";
+  | "level_passed" | "level_failed" | "level_ended" | "expiry" | "drill" | "quiz" | "objective" | "pause"
+  | "tender" | "cargo" | "voyage" | "arrival" | "claim" | "chokepoint";
 
 export interface EngineEvent {
   kind: EngineEventKind;
