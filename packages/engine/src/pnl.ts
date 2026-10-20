@@ -177,7 +177,7 @@ export function positions(state: State): PositionRow[] {
 }
 
 export function attributionTotals(rows: AttributionRow[]): Record<AttributionLeg, number> {
-  const out: Record<AttributionLeg, number> = { flat: 0, basis: 0, time_spread: 0, crack: 0, fees_slippage: 0, fx: 0, finance: 0, options: 0, freight: 0, demurrage: 0, storage: 0, quality: 0 };
+  const out: Record<AttributionLeg, number> = { flat: 0, basis: 0, time_spread: 0, crack: 0, fees_slippage: 0, fx: 0, finance: 0, options: 0, freight: 0, demurrage: 0, storage: 0, quality: 0, credit: 0 };
   for (const r of rows) out[r.leg] += r.amount;
   return out;
 }

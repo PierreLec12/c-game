@@ -10,7 +10,11 @@ import type { LevelSpec } from "./levels";
 import { ckey, estimateFill, executeMarket, makeOrder, restOrder } from "./liquidity";
 import { convertFx, drawLine, ledger, marginRequired, rebalanceMargin, repayLine } from "./finance";
 import { applyFillToLots, feeRow, netLots } from "./pnl";
-import { attachSale, cargoFromOffer, efpFix, legMark, remarkCargo, chargeCargo } from "./physical";
+import { attachSale, cargoFromOffer, efpFix, legMark, remarkCargo, chargeCargo, prepayCargo, isPipeline } from "./physical";
+import { insureCargo, lineAvailable, openLc } from "./finance";
+import { decideCounter, rememberDispute } from "./counterparties";
+import { blendParcels, chargeTanks, drawParcel, leaseTank, releaseTank, storeCargo, tankInventory } from "./storage";
+import { STORAGE_TANKS } from "./world_data";
 import { charterQuotes, etaTick, planLegs } from "./shipping";
 import { divert, passageDecision } from "./voyages";
 import { COUNTERPARTIES, GRADES, PORTS, SHIPPING } from "./world_data";
@@ -106,13 +110,21 @@ export function validateAction(state: State, spec: LevelSpec, a: Action): string
       if (t.expiresTick <= state.tick) return `tender ${t.id} has expired`;
       if (t.side === "offer") {
         if (t.laycan[0] * 24 < state.tick) return "the laycan has already started";
+        if (a.prepay) {
+          if (!(t.prepayDiscount > 0)) return `${COUNTERPARTIES[t.counterparty].name} is not offering a prepayment discount`;
+          const est = (state.factors.brentPrompt + t.diff) * t.bbl;
+          if (est > state.finance.cashUSD + lineAvailable(state) + 1e-6) return `prepaying about ${usd(est)} needs cash or line you do not have (${usd(state.finance.cashUSD + lineAvailable(state))} available)`;
+        }
         return null;
       }
       const cargo = state.cargoes.find((c) => c.id === a.cargoId);
       if (!cargo) return "a bid needs one of your cargoes: pick the cargo to sell";
       if (cargo.grade !== t.grade) return `${COUNTERPARTIES[t.counterparty].name} bids for ${GRADES[t.grade].name}, not ${GRADES[cargo.grade].name}`;
       if (cargo.sale) return `${cargo.id} is already sold`;
-      if (cargo.status === "delivered" || cargo.status === "discharging") return `${cargo.id} has already been discharged`;
+      if (cargo.status === "cancelled") return `${cargo.id} was cancelled`;
+      if ((cargo.status === "delivered" || cargo.status === "discharging") && cargo.tankId === null) return `${cargo.id} has already been discharged and is not in a tank`;
+      if (cargo.tankId !== null && t.port !== state.tanks.find((k) => k.id === cargo.tankId)?.port) return `${cargo.id} sits in a tank at ${PORTS[state.tanks.find((k) => k.id === cargo.tankId)!.port].name}; this bid is for ${PORTS[t.port].name}`;
+      if (cargo.tankId !== null && !state.tanks.find((k) => k.id === cargo.tankId)!.parcels.some((p) => p.id === cargo.parcelId && p.grade !== "BLEND")) return `${cargo.id}'s parcel was blended; a blend is marked on the grid but cannot be tendered yet`;
       if (Math.abs(cargo.bbl - t.bbl) > 0.15 * t.bbl) return `the bid is for ${t.bbl.toLocaleString()} bbl; your cargo is ${cargo.bbl.toLocaleString()}`;
       return null;
     }
@@ -160,6 +172,67 @@ export function validateAction(state: State, spec: LevelSpec, a: Action): string
       const claim = cargo.claims.find((c) => c.id === a.claimId);
       if (!claim) return `no claim ${a.claimId}`;
       if (claim.status !== "open") return `claim ${claim.id} is ${claim.status}`;
+      return null;
+    }
+    case "open_lc": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      if (cargo.lcId) return `${cargo.id} already has ${cargo.lcId}`;
+      if (cargo.status !== "contracted" && cargo.status !== "fixed") return `too late: ${cargo.id} is ${cargo.status}`;
+      const face = legMark(state, cargo, cargo.purchase).perBbl * cargo.bbl;
+      if (face > lineAvailable(state) + 1e-6) return `a letter of credit for ${usd(face)} needs that much of the line; ${usd(lineAvailable(state))} is available`;
+      return null;
+    }
+    case "insure": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      if (cargo.insured) return `${cargo.id} is already insured`;
+      if (cargo.status === "cancelled" || cargo.status === "delivered") return `too late: ${cargo.id} is ${cargo.status}`;
+      return null;
+    }
+    case "counter_tender": {
+      const t = state.tenders.find((x) => x.id === a.tenderId);
+      if (!t) return `no tender ${a.tenderId}`;
+      if (t.status !== "open") return `tender ${t.id} is ${t.status}`;
+      if (t.countered) return `${COUNTERPARTIES[t.counterparty].name} has already answered a counter on ${t.id}`;
+      if (!Number.isFinite(a.diff)) return "a counter needs a differential";
+      return null;
+    }
+    case "lease_tank": {
+      const spec = STORAGE_TANKS[a.port];
+      if (!spec) return `no tanks to lease at ${a.port}`;
+      if (!(a.bbl >= 50000)) return "lease at least 50,000 bbl";
+      const leased = state.tanks.filter((t) => t.port === a.port && !t.released).reduce((x, t) => x + t.capacityBbl, 0);
+      if (leased + a.bbl > spec.capacityBbl.value) return `${PORTS[a.port].name} has ${(spec.capacityBbl.value - leased).toLocaleString()} bbl left to lease`;
+      if (!(a.months >= spec.minMonths.value)) return `the minimum term at ${PORTS[a.port].name} is ${spec.minMonths.value} month${spec.minMonths.value > 1 ? "s" : ""}`;
+      return null;
+    }
+    case "store_cargo": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId);
+      if (!cargo) return `no cargo ${a.cargoId}`;
+      const tank = state.tanks.find((t) => t.id === a.tankId && !t.released);
+      if (!tank) return `no tank ${a.tankId}`;
+      if (cargo.status !== "delivered") return `${cargo.id} is ${cargo.status}: oil goes into a tank once it is delivered`;
+      if (cargo.tankId) return `${cargo.id} is already in ${cargo.tankId}`;
+      if (cargo.sale) return `${cargo.id} is sold: the receiver takes it`;
+      const at = isPipeline(cargo) ? cargo.loadPort : cargo.dischargePort;
+      if (tank.port !== at) return `${cargo.id} is at ${PORTS[at].name}; tank ${tank.id} is at ${PORTS[tank.port].name}`;
+      if (tankInventory(tank) + cargo.bbl > tank.capacityBbl + 1e-6) return `tank ${tank.id} has ${(tank.capacityBbl - tankInventory(tank)).toLocaleString()} bbl of room`;
+      return null;
+    }
+    case "blend": {
+      const tank = state.tanks.find((t) => t.id === a.tankId && !t.released);
+      if (!tank) return `no tank ${a.tankId}`;
+      if (!Array.isArray(a.parcelIds) || a.parcelIds.length < 2) return "blend at least two parcels";
+      if (!a.parcelIds.every((id) => tank.parcels.some((p) => p.id === id))) return "every parcel must be in that tank";
+      if (state.cargoes.some((c) => c.sale && c.parcelId && a.parcelIds.includes(c.parcelId))) return "a parcel sold forward cannot be blended";
+      return null;
+    }
+    case "release_tank": {
+      const tank = state.tanks.find((t) => t.id === a.tankId && !t.released);
+      if (!tank) return `no tank ${a.tankId}`;
+      if (tankInventory(tank) > 0) return `tank ${tank.id} still holds ${tankInventory(tank).toLocaleString()} bbl`;
+      if (state.cargoes.some((c) => c.tankId === tank.id && c.sale && c.sale.paidTick === null)) return `tank ${tank.id} holds oil sold forward until that sale is delivered and paid`;
       return null;
     }
     case "request_limit": {
@@ -288,10 +361,19 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
       if (t.side === "offer") {
         const cargo = cargoFromOffer(state, t);
         state.cargoes.push(cargo);
+        let prepayNote = "";
+        if (a.prepay && t.prepayDiscount > 0) {
+          const amount = prepayCargo(state, cargo, t.prepayDiscount);
+          fund(state, amount);
+          ledger(state, "other", -amount, `Prepaid ${usd(amount)} to ${COUNTERPARTIES[t.counterparty].name} for ${GRADES[cargo.grade].name} ${cargo.id} (differential ${t.prepayDiscount.toFixed(2)} better)`);
+          prepayNote = ` Prepaid ${usd(amount)}: the differential is ${cargo.purchase.diff >= 0 ? "+" : ""}${cargo.purchase.diff.toFixed(2)}, and the line carries the money until the invoice.`;
+        }
+        const cs = state.counterparties[t.counterparty];
+        if (cs) cs.dealsWithPlayer += 1;
         const rows = remarkCargo(state, cargo, "accepted");
         state.pnl.attribution.push(...rows);
         const m = rows.reduce((x, r) => x + r.amount, 0);
-        const text = `Bought ${cargo.bbl.toLocaleString()} bbl of ${GRADES[cargo.grade].name} ${cargo.purchase.incoterm} ${PORTS[cargo.loadPort].name} from ${COUNTERPARTIES[t.counterparty].name} at ${t.basis} ${t.diff >= 0 ? "+" : ""}${t.diff.toFixed(2)}, laycan days ${t.laycan[0]}-${t.laycan[1]}. Marked at ${usd(m)} against the market (unsold, freight unfixed). Fix a ship on the Desk.`;
+        const text = `Bought ${cargo.bbl.toLocaleString()} bbl of ${GRADES[cargo.grade].name} ${cargo.purchase.incoterm} ${PORTS[cargo.loadPort].name} from ${COUNTERPARTIES[t.counterparty].name} at ${t.basis} ${cargo.purchase.diff >= 0 ? "+" : ""}${cargo.purchase.diff.toFixed(2)}, laycan days ${t.laycan[0]}-${t.laycan[1]}. Marked at ${usd(m)} against the market${isPipeline(cargo) ? "" : " (unsold, freight unfixed). Fix a ship on the Desk"}.${cargo.requiresLc ? " The seller wants a letter of credit before loading: open one on Finance." : ""}${prepayNote}`;
         events.push({ kind: "cargo", tick: state.tick, text, data: { cargoId: cargo.id }, pause: true });
       } else {
         const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
@@ -299,6 +381,13 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
         attachSale(state, cargo, t);
         const v = state.voyages.find((x) => x.id === cargo.voyageId);
         if (v && cargo.dischargePort !== before && v.status !== "done") events.push(...divert(state, v, cargo.dischargePort));
+        if (cargo.tankId) {
+          // the stored barrels are committed to the sale: the parcel leaves the tank's mark and the sale leg carries them
+          const tank = state.tanks.find((k) => k.id === cargo.tankId)!;
+          const d = drawParcel(state, tank, cargo.parcelId!, cargo.bbl);
+          state.pnl.attribution.push(...d.rows);
+          cargo.parcelId = null;
+        }
         const rows = remarkCargo(state, cargo, "sold");
         state.pnl.attribution.push(...rows);
         events.push({ kind: "cargo", tick: state.tick, text: `Sold ${GRADES[cargo.grade].name} ${cargo.id} ${t.incoterm} ${PORTS[t.port].name} to ${COUNTERPARTIES[t.counterparty].name} at ${t.basis} ${t.diff >= 0 ? "+" : ""}${t.diff.toFixed(2)}, pricing ${cargo.sale!.window.kind === "after_discharge" ? `${cargo.sale!.window.days ?? 5} days after discharge` : cargo.sale!.window.kind === "after_bl" ? `${cargo.sale!.window.days ?? 5} days after B/L` : cargo.sale!.window.kind}. Discharge window days ${t.laycan[0]}-${t.laycan[1]}.`, data: { cargoId: cargo.id }, pause: true });
@@ -308,7 +397,58 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
     case "decline_tender": {
       const t = state.tenders.find((x) => x.id === a.tenderId)!;
       t.status = "declined";
-      events.push({ kind: "tender", tick: state.tick, text: `Declined ${t.id} from ${COUNTERPARTIES[t.counterparty].name}.`, data: { tenderId: t.id } });
+      t.declineReason = a.reason ?? null;
+      events.push({ kind: "tender", tick: state.tick, text: `Declined ${t.id} from ${COUNTERPARTIES[t.counterparty].name}${a.reason ? `: ${a.reason}` : "."}`, data: { tenderId: t.id } });
+      break;
+    }
+    case "open_lc": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const face = legMark(state, cargo, cargo.purchase).perBbl * cargo.bbl;
+      const r = openLc(state, cargo, face);
+      if (r.lc) events.push({ kind: "finance", tick: state.tick, text: `Opened ${r.lc.id} for ${usd(face)} in favour of ${COUNTERPARTIES[cargo.purchase.counterparty].name}: fee ${usd(r.lc.feeUsd)}; the line has ${usd(lineAvailable(state))} left.`, data: { cargoId: cargo.id } });
+      else events.push({ kind: "news", tick: state.tick, text: r.refusal ?? "could not open the letter of credit" });
+      break;
+    }
+    case "insure": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const value = legMark(state, cargo, cargo.purchase).perBbl * cargo.bbl;
+      const premium = insureCargo(state, cargo, value);
+      events.push({ kind: "finance", tick: state.tick, text: `Insured ${GRADES[cargo.grade].name} ${cargo.id} against non-performance for ${usd(premium)}.`, data: { cargoId: cargo.id } });
+      break;
+    }
+    case "counter_tender": {
+      const t = state.tenders.find((x) => x.id === a.tenderId)!;
+      const d = decideCounter(state, t.id, a.diff);
+      t.countered = { diff: a.diff, answer: d.accepted ? "accepted" : "declined", tick: state.tick };
+      if (d.accepted) { t.diff = a.diff; t.note = `${t.note} Countered to ${a.diff >= 0 ? "+" : ""}${a.diff.toFixed(2)} and accepted.`; }
+      events.push({ kind: "tender", tick: state.tick, text: d.text, data: { tenderId: t.id }, pause: true });
+      break;
+    }
+    case "lease_tank": {
+      const tank = leaseTank(state, a.port, a.bbl, a.months);
+      state.pnl.attribution.push(...chargeTanks(state));
+      events.push({ kind: "storage", tick: state.tick, text: `Leased tank ${tank.id} at ${PORTS[a.port].name}: ${a.bbl.toLocaleString()} bbl for ${a.months} month${a.months > 1 ? "s" : ""} at ${tank.costPerBblMonth.toFixed(2)} ${tank.currency}/bbl/month; the first month is paid.`, data: { tankId: tank.id } });
+      break;
+    }
+    case "store_cargo": {
+      const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
+      const tank = state.tanks.find((t) => t.id === a.tankId)!;
+      const r = storeCargo(state, cargo, tank);
+      state.pnl.attribution.push(...r.rows);
+      events.push({ kind: "storage", tick: state.tick, text: `${GRADES[cargo.grade].name} ${cargo.id}: ${cargo.bbl.toLocaleString()} bbl into tank ${tank.id} at ${PORTS[tank.port].name} as parcel ${r.parcel.id}, marked at the ${r.parcel.benchmark} prompt.`, data: { cargoId: cargo.id, tankId: tank.id } });
+      break;
+    }
+    case "blend": {
+      const tank = state.tanks.find((t) => t.id === a.tankId)!;
+      const r = blendParcels(state, tank, a.parcelIds);
+      state.pnl.attribution.push(...r.rows);
+      events.push({ kind: "storage", tick: state.tick, text: r.rows[0]?.text ?? `Blended into ${r.parcel.label}.`, data: { tankId: tank.id, parcelId: r.parcel.id }, pause: true });
+      break;
+    }
+    case "release_tank": {
+      const tank = state.tanks.find((t) => t.id === a.tankId)!;
+      const r = releaseTank(state, tank);
+      events.push({ kind: "storage", tick: state.tick, text: r ?? `Released tank ${tank.id} at ${PORTS[tank.port].name}.`, data: { tankId: tank.id } });
       break;
     }
     case "fix_charter": {
@@ -386,6 +526,7 @@ export function applyAction(state: State, spec: LevelSpec, a: Action, s: Stream)
       const cargo = state.cargoes.find((c) => c.id === a.cargoId)!;
       const claim = cargo.claims.find((c) => c.id === a.claimId)!;
       const won = s.chance(0.5);
+      rememberDispute(state, cargo.sale?.counterparty ?? claim.from, `a contested ${claim.kind} claim`);
       claim.resolvedTick = state.tick + 48;
       if (won) { claim.status = "won"; claim.amountUsd = 0; events.push({ kind: "claim", tick: state.tick, text: `Contested the claim on ${cargo.id}: the inspector's re-test came back on spec. Claim withdrawn.`, data: { cargoId: cargo.id }, pause: true }); }
       else {
@@ -425,3 +566,14 @@ export function fillMarket(state: State, o: Order): EngineEvent[] {
 }
 
 export function netPositions(state: State): Record<InstrumentId, number> { return netLots(state); }
+
+/** Draw the line for a payment the cash cannot cover; the draw is the desk's and repays itself when cash returns. */
+function fund(state: State, amount: number): void {
+  const short = amount - state.finance.cashUSD;
+  if (short <= 0) return;
+  const draw = Math.min(short, lineAvailable(state));
+  if (draw <= 0) return;
+  state.finance.lineDrawn += draw;
+  state.finance.autoDrawn += draw;
+  ledger(state, "line_draw", draw, `Drew $${Math.round(draw).toLocaleString()} on the line for a payment`);
+}

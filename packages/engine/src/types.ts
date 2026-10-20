@@ -159,7 +159,7 @@ export interface AttributionRow {
   lotId?: string;
   packageId?: string;
 }
-export type AttributionLeg = "flat" | "basis" | "time_spread" | "crack" | "fees_slippage" | "fx" | "finance" | "options" | "freight" | "demurrage" | "storage" | "quality";
+export type AttributionLeg = "flat" | "basis" | "time_spread" | "crack" | "fees_slippage" | "fx" | "finance" | "options" | "freight" | "demurrage" | "storage" | "quality" | "credit";
 
 export interface RiskLimits {
   var95: number; // USD
@@ -167,7 +167,7 @@ export interface RiskLimits {
   grossLots: number; // across the book
   stopLoss: number; // USD, level P&L below -stopLoss loses a life
   drawdown: number; // USD, from the peak
-  concentration: number; // share of exposure in one counterparty (unused until level 11)
+  concentration: number; // the most one counterparty may be exposed for, as a multiple of capital (50 or more: no limit)
 }
 
 export interface RiskState {
@@ -187,7 +187,7 @@ export interface RiskState {
   varBreachedAtClose: boolean;
   stopLossRef: number; // level P&L at the last life lost; the stop-loss measures from here
   forcedReductions: number;
-  closes: { tick: number; physBbl: number; net: Record<InstrumentId, number>; var95: number; pnl: number }[]; // one row per settle: what the book looked like at the close
+  closes: { tick: number; physBbl: number; net: Record<InstrumentId, number>; var95: number; pnl: number; cashUsd: number }[]; // one row per settle: what the book looked like at the close
 }
 
 export interface NewsItem {
@@ -199,6 +199,7 @@ export interface NewsItem {
   reliability: number; // the base rate for this source type, shown after resolution
   eventId?: string;
   resolved?: { tick: number; outcome: "true" | "false"; text: string };
+  shockTick?: number; // when the thing it reports actually happened (delayed news)
 }
 
 export interface Release {
@@ -300,7 +301,7 @@ export interface PnlState {
 // ---------------------------------------------------------------- physical: cargoes, tenders, ships
 export type Incoterm = "FOB" | "CIF" | "DES";
 /** A pricing window: which days' assessments average into the price. Day numbers are level days. */
-export interface WindowSpec { kind: "after_bl" | "after_discharge" | "month_avg_bl" | "deemed"; days?: number; deemedDay?: number }
+export interface WindowSpec { kind: "after_bl" | "after_discharge" | "month_avg_bl" | "deemed" | "month_avg_offset"; days?: number; deemedDay?: number; offsetMonths?: number }
 export interface CargoLeg {
   counterparty: string;
   basis: Basis;
@@ -346,6 +347,13 @@ export interface Cargo {
   extraCostsBase: number; // demurrage + war risk + claims marked at the last settle
   marketBase: Record<string, number>; // for an unsold cargo: the expected sale value by part at the last mark
   createdTick: number;
+  requiresLc: boolean; // the seller wants a letter of credit before loading
+  lcId: string | null;
+  prepaidUsd: number; // paid to the seller before pricing, for a discount on the differential
+  insured: boolean; // non-performance insurance on this cargo's counterparties
+  tankId: string | null; // in storage: the tank the oil sits in
+  parcelId: string | null;
+  cancelled: { tick: number; by: string; reason: string } | null;
 }
 export interface Tender {
   id: string;
@@ -365,6 +373,10 @@ export interface Tender {
   note: string; // what the counterparty says
   trap: string | null; // what the mentor says afterwards if there was one (hidden until the tender closes)
   fairDiff: number; // the market differential at issue, for the debrief
+  requiresLc: boolean;
+  prepayDiscount: number; // $/bbl off the differential if the buyer prepays (0 = not offered)
+  countered: { diff: number; answer: "accepted" | "declined"; tick: number } | null; // the player's counter and the reply
+  declineReason: string | null;
 }
 export interface Vessel { id: string; name: string; cls: VesselClass; owner: string; status: "available" | "ballast" | "loading" | "laden" | "discharging" | "waiting"; lon: number; lat: number; node: string; atPort: string | null; voyageId: string | null; age: number; speedFactor: number }
 export interface VoyageLeg { kind: "ballast" | "laden"; from: string; to: string; path: string[]; nm: number; depTick: number | null; arrTick: number | null }
@@ -394,6 +406,34 @@ export interface Voyage {
   trail: [number, number, number][]; // [tick, lon, lat], the last two days
 }
 export interface ChokepointState { id: string; status: "open" | "restricted" | "closed"; since: number; note: string }
+export interface LetterOfCredit { id: string; cargoId: string; beneficiary: string; faceUsd: number; feeUsd: number; openedTick: number; closedTick: number | null }
+export interface Parcel { id: string; grade: Grade | "BLEND"; label: string; bbl: number; api: number; sulphur: number; costPerBbl: number; cargoId: string | null; benchmark: Basis; base: Record<string, number> }
+export interface Tank {
+  id: string;
+  port: string;
+  capacityBbl: number;
+  costPerBblMonth: number;
+  currency: "USD" | "EUR";
+  leasedTick: number;
+  months: number; // minimum term
+  nextChargeTick: number;
+  chargesPaid: number;
+  fillRateBblPerDay: number;
+  parcels: Parcel[];
+  released: boolean;
+}
+export interface CounterpartyState {
+  id: string;
+  rating: string;
+  ratingScore: number; // 0..100, AAA = 95
+  edgeAdj: number; // added to the counterparty's differential edge after disputes
+  disputes: number;
+  late: number;
+  defaulted: boolean;
+  gone: boolean;
+  dealsWithPlayer: number;
+  note: string;
+}
 
 export interface State {
   version: 1;
@@ -421,8 +461,13 @@ export interface State {
   voyages: Voyage[];
   chokepoints: Record<string, ChokepointState>;
   portCongestion: Record<string, number>; // port -> tick until which the berth is taken
+  lcs: LetterOfCredit[];
+  tanks: Tank[];
+  counterparties: Record<string, CounterpartyState>;
+  infoDelayHours: number; // tier knob: how long after a shock its headline arrives
   history: { factors: Factors; day: number }[]; // daily closes of the factors, oldest first (pre-history then live)
-  counters: { lot: number; order: number; fill: number; ledger: number; news: number; cargo: number; tender: number; voyage: number; claim: number };
+  counters: { lot: number; order: number; fill: number; ledger: number; news: number; cargo: number; tender: number; voyage: number; claim: number; lc: number; tank: number; parcel: number };
+  pendingNewsDelay: number; // set while a delayed event fires: its headlines publish this many hours later
   capital: number;
   paused: { reason: string; tick: number } | null; // the last auto-pause the engine asked for
 }
@@ -433,7 +478,8 @@ export type ActionType =
   | "draw_line" | "repay_line" | "post_margin" | "convert_fx"
   | "open_card" | "ask_mentor" | "answer_drill" | "answer_quiz"
   | "end_level" | "request_limit"
-  | "accept_tender" | "decline_tender" | "fix_charter" | "instruct_ship" | "efp" | "settle_claim" | "contest_claim";
+  | "accept_tender" | "decline_tender" | "fix_charter" | "instruct_ship" | "efp" | "settle_claim" | "contest_claim"
+  | "open_lc" | "insure" | "counter_tender" | "lease_tank" | "store_cargo" | "blend" | "release_tank";
 
 interface Base { player: PlayerId }
 export type Action =
@@ -452,8 +498,15 @@ export type Action =
   | (Base & { type: "answer_quiz"; questionId: string; choice: number })
   | (Base & { type: "end_level" })
   | (Base & { type: "request_limit"; limit: keyof RiskLimits; value: number })
-  | (Base & { type: "accept_tender"; tenderId: string; cargoId?: string })
-  | (Base & { type: "decline_tender"; tenderId: string })
+  | (Base & { type: "accept_tender"; tenderId: string; cargoId?: string; prepay?: boolean })
+  | (Base & { type: "decline_tender"; tenderId: string; reason?: string })
+  | (Base & { type: "open_lc"; cargoId: string })
+  | (Base & { type: "insure"; cargoId: string })
+  | (Base & { type: "counter_tender"; tenderId: string; diff: number })
+  | (Base & { type: "lease_tank"; port: string; bbl: number; months: number })
+  | (Base & { type: "store_cargo"; cargoId: string; tankId: string })
+  | (Base & { type: "blend"; tankId: string; parcelIds: string[] })
+  | (Base & { type: "release_tank"; tankId: string })
   | (Base & { type: "fix_charter"; cargoId: string; vesselId: string })
   | (Base & { type: "instruct_ship"; cargoId: string; speedFactor?: number; passage?: "proceed" | "reroute"; anchorDays?: number })
   | (Base & { type: "efp"; cargoId: string; leg: "purchase" | "sale" })
@@ -470,7 +523,7 @@ export type EngineEventKind =
   | "fill" | "order_rested" | "order_cancelled" | "settle" | "session_close" | "margin_call" | "margin_met" | "liquidation"
   | "news" | "event" | "release" | "card" | "mentor" | "limit_warning" | "forced_reduction" | "life_lost"
   | "level_passed" | "level_failed" | "level_ended" | "expiry" | "drill" | "quiz" | "objective" | "pause"
-  | "tender" | "cargo" | "voyage" | "arrival" | "claim" | "chokepoint";
+  | "tender" | "cargo" | "voyage" | "arrival" | "claim" | "chokepoint" | "finance" | "credit" | "storage" | "rumour";
 
 export interface EngineEvent {
   kind: EngineEventKind;

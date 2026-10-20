@@ -11,8 +11,10 @@ import { publishNews, resolveNews } from "./information";
 import { dayOfTick } from "./calendar";
 import { issueTender, type TenderTemplate } from "./counterparties";
 import { rerouteAround } from "./voyages";
-import { raiseQualityClaim } from "./physical";
-import { CHOKEPOINT_SPECS, GRADES, PORTS, type Grade } from "./world_data";
+import { raiseQualityClaim, cancelCargo } from "./physical";
+import { moveRating, sellerDefault } from "./counterparties";
+import { CHOKEPOINT_SPECS, COUNTERPARTIES, GRADES, PORTS, type Grade } from "./world_data";
+import { resolveNews as resolve } from "./information";
 import type { WindowSpec } from "./types";
 
 export interface EventDef {
@@ -169,6 +171,7 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
         counterparty: str(p.counterparty, "NORTHSEA_MAJOR"), side: str(p.side, "offer") as "offer" | "bid", grade: str(p.grade, "FORTIES") as Grade, bbl: typeof p.bbl === "number" ? p.bbl : undefined,
         incoterm: str(p.incoterm, "FOB") as "FOB" | "CIF" | "DES", port: str(p.port, "SULLOM_VOE"), basis: typeof p.basis === "string" ? (p.basis as TenderTemplate["basis"]) : undefined, window,
         diffVsFair: num(p.diffVsFair, 0), laycanStart: num(p.laycanStart, 5), laycanDays: num(p.laycanDays, 2), openHours: num(p.openHours, 48), note: typeof p.note === "string" ? p.note : undefined, trap: typeof p.trap === "string" ? p.trap : undefined,
+        requiresLc: p.requiresLc === true, prepayDiscount: num(p.prepayDiscount, 0),
       }, s);
       publishNews(state, { source: "wire", headline: `${t.side === "offer" ? "Offer" : "Bid"}: ${GRADES[t.grade].name} ${t.incoterm} ${PORTS[t.port].name} at ${t.basis} ${t.diff >= 0 ? "+" : ""}${t.diff.toFixed(2)}`, body: t.note, eventId: ev.id });
       return [{ kind: "tender", tick: state.tick, text: `${t.side === "offer" ? "Offer" : "Bid"} ${t.id}: ${t.note} Open ${Math.round((t.expiresTick - state.tick) / 24)} days.`, pause: true, data: { tenderId: t.id } }];
@@ -269,6 +272,72 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
       return [{ kind: "news", tick: state.tick, text: n.headline, pause: false }];
     },
   },
+
+  rumour: {
+    kind: "rumour", title: "A rumour", card: "rumour_base_rate",
+    fire(state, ev) {
+      const pct = num(ev.params.moveNow, 0.01);
+      jumpBrent(state, Math.log(1 + pct));
+      state.world = applyWorldShock(state.world, { eventIntensity: 0.2 });
+      const n = publishNews(state, { source: "rumour", headline: str(ev.params.headline, "Rumour: a supply disruption"), body: str(ev.params.body, "Unconfirmed. The market moves on it now; confirmation or denial follows."), eventId: ev.id });
+      return [{ kind: "rumour", tick: state.tick, text: n.headline, pause: true, data: { truthful: ev.params.truthful } }];
+    },
+  },
+  rumour_resolve: {
+    kind: "rumour_resolve", title: "A rumour resolved",
+    fire(state, ev) {
+      const src = String(ev.params.rumourId);
+      const item = state.news.find((n) => n.eventId === src);
+      const pct = num(ev.params.moveNow, 0.01);
+      jumpBrent(state, -Math.log(1 + pct));
+      if (item) resolve(state, item.id, "false", str(ev.params.text, "Denied: the rumour was false; the move unwinds."));
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, "Denied: no disruption"), body: str(ev.params.text, "The rumour was false. The market gives the move back."), eventId: ev.id });
+      return [{ kind: "news", tick: state.tick, text: n.headline, pause: true }];
+    },
+  },
+  counterparty_default: {
+    kind: "counterparty_default", title: "A counterparty defaults", card: "cheapest_for_a_reason",
+    fire(state, ev) {
+      const cp = str(ev.params.counterparty, "VANTAGE");
+      const victims = state.cargoes.filter((c) => c.purchase.counterparty === cp && (c.status === "contracted" || c.status === "fixed"));
+      const events: EngineEvent[] = [];
+      for (const c of victims) {
+        state.pnl.attribution.push(...cancelCargo(state, c, cp, `${COUNTERPARTIES[cp].name} failed to deliver`, true));
+        events.push({ kind: "credit", tick: state.tick, text: `${COUNTERPARTIES[cp].name} has defaulted: ${GRADES[c.grade].name} ${c.id} will not load.${c.sale ? " Your onward sale cannot be delivered and the receiver claims." : ""}${c.insured ? " Your insurance pays 90% of the loss." : ""}`, pause: true, data: { cargoId: c.id } });
+        events.push(...sellerDefault(state, c, str(ev.params.body, "Failed to perform on a cargo.")));
+      }
+      for (const t of state.tenders) if (t.counterparty === cp && t.status === "open") t.status = "expired";
+      const cs = state.counterparties[cp];
+      if (cs) { cs.defaulted = true; cs.gone = true; }
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `${COUNTERPARTIES[cp].name} stops performing on contracts`), body: str(ev.params.body, "Banks pulled its lines. Cargoes it sold will not load; cargoes it bought will not be paid."), eventId: ev.id });
+      events.push({ kind: "credit", tick: state.tick, text: n.headline, pause: victims.length === 0 });
+      if (!victims.length) events.push(...moveRating(state, cp, -40, "default"));
+      return events;
+    },
+  },
+  counterparty_vanish: {
+    kind: "counterparty_vanish", title: "A counterparty disappears",
+    fire(state, ev) {
+      const cp = str(ev.params.counterparty, "MERIDIAN_TRADERS");
+      const events: EngineEvent[] = [];
+      for (const t of state.tenders) if (t.counterparty === cp && t.status === "open") { t.status = "expired"; t.trap = `${COUNTERPARTIES[cp].name} withdrew every quote.`; }
+      for (const c of state.cargoes) if (c.purchase.counterparty === cp && (c.status === "contracted" || c.status === "fixed")) {
+        state.pnl.attribution.push(...cancelCargo(state, c, cp, `${COUNTERPARTIES[cp].name} disappeared`, false));
+        events.push({ kind: "credit", tick: state.tick, text: `${COUNTERPARTIES[cp].name} is gone: ${GRADES[c.grade].name} ${c.id} is cancelled without a claim either way.`, pause: true, data: { cargoId: c.id } });
+      }
+      const cs = state.counterparties[cp];
+      if (cs) cs.gone = true;
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `${COUNTERPARTIES[cp].name} closes its doors`), body: str(ev.params.body, "Phones unanswered since Friday. Open quotes are withdrawn."), eventId: ev.id });
+      events.push({ kind: "credit", tick: state.tick, text: n.headline, pause: true });
+      return events;
+    },
+  },
+  rating_change: {
+    kind: "rating_change", title: "Rating change",
+    fire(state, ev) {
+      return moveRating(state, str(ev.params.counterparty, "ADRIATIC_SMALL"), num(ev.params.delta, -15), str(ev.params.body, "An agency moved the rating."));
+    },
+  },
 };
 
 /** Build the scheduled list from a level's schedule: leaks are added a day before meetings; turnarounds get an end. */
@@ -285,6 +354,18 @@ export function scheduleEvents(entries: { id?: string; kind: string; day: number
       const claim = truthful ? String(params.decision) : s.pick(others);
       out.push({ id: `${id}:leak`, kind: "opec_leak", tick: tick - 24, fired: false, params: { claim, kbd: params.kbd ?? 500, truthful } });
     }
+    if (e.kind === "rumour") {
+      const pTrue = typeof params.pTrue === "number" ? params.pTrue : 0.5;
+      const truthful = typeof params.truthful === "boolean" ? params.truthful : s.chance(pTrue);
+      params.truthful = truthful;
+      const resolveTick = tick + (typeof params.resolveHours === "number" ? params.resolveHours : 48);
+      if (truthful) {
+        const realKind = str(params.eventKind, "field_outage");
+        let realParams: Record<string, number | string | boolean> = {};
+        try { realParams = typeof params.eventParams === "string" ? JSON.parse(params.eventParams) : {}; } catch { realParams = {}; }
+        out.push({ id: `${id}:truth`, kind: realKind, tick: resolveTick, fired: false, params: { ...realParams, confirms: id } });
+      } else out.push({ id: `${id}:false`, kind: "rumour_resolve", tick: resolveTick, fired: false, params: { rumourId: id, moveNow: typeof params.moveNow === "number" ? params.moveNow : 0.01, headline: str(params.denyHeadline, "Denied: the rumour was false"), text: str(params.denyText, "The rumour was false. The market gives the move back.") } });
+    }
     if (e.kind === "refinery_turnaround") {
       const days = typeof params.days === "number" ? params.days : 10;
       out.push({ id: `${id}:end`, kind: "turnaround_end", tick: tick + days * 24, fired: false, params: { runs: -(typeof params.runs === "number" ? params.runs : -0.08) } });
@@ -295,6 +376,8 @@ export function scheduleEvents(entries: { id?: string; kind: string; day: number
 }
 
 /** Fire every event due at the current tick. */
+const DELAYABLE = new Set(["field_outage", "tanker_seizure", "chokepoint", "port_strike", "port_congestion", "grade_diff_shock", "freight_shock", "balance_shift", "inventory_shock", "geo_scare", "refinery_turnaround", "counterparty_default", "counterparty_vanish"]);
+
 export function fireDue(state: State, s: Stream): EngineEvent[] {
   const events: EngineEvent[] = [];
   for (const ev of state.events) {
@@ -302,7 +385,16 @@ export function fireDue(state: State, s: Stream): EngineEvent[] {
     const def = EVENT_LIBRARY[ev.kind];
     ev.fired = true;
     if (!def) continue;
-    events.push(...def.fire(state, ev, s));
+    const delay = typeof ev.params.delay === "number" ? ev.params.delay : DELAYABLE.has(ev.kind) ? state.infoDelayHours : 0;
+    state.pendingNewsDelay = delay;
+    const fired = def.fire(state, ev, s);
+    state.pendingNewsDelay = 0;
+    if (typeof ev.params.confirms === "string") {
+      const item = state.news.find((n) => n.eventId === ev.params.confirms);
+      if (item) resolve(state, item.id, "true", "Confirmed: the rumour was right.");
+    }
+    // a delayed event's headlines reach the screen later; the world moves now
+    events.push(...(delay > 0 ? fired.filter((e) => !["news", "event", "release", "rumour", "credit"].includes(e.kind)) : fired));
   }
   return events;
 }

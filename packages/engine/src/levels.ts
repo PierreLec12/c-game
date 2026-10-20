@@ -65,6 +65,8 @@ export interface LevelSpec {
   seeds: number[];
   /** process checklist weight: objectives counted as done over total */
   passRuleText: string;
+  /** tier knob: hours between a shock and its headline for the delayable event kinds (0 in tiers 0 to 2) */
+  infoDelayHours?: number;
 }
 
 const registry = new Map<number, LevelSpec>();

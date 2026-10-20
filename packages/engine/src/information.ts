@@ -9,7 +9,8 @@ export const RELIABILITY: Record<NewsItem["source"], number> = {
 };
 
 export function publishNews(state: State, item: Omit<NewsItem, "id" | "reliability" | "tick"> & { tick?: number; reliability?: number }): NewsItem {
-  const n: NewsItem = { id: `n${++state.counters.news}`, tick: item.tick ?? state.tick, reliability: item.reliability ?? RELIABILITY[item.source], ...item } as NewsItem;
+  const delay = state.pendingNewsDelay ?? 0;
+  const n: NewsItem = { id: `n${++state.counters.news}`, tick: (item.tick ?? state.tick) + delay, reliability: item.reliability ?? RELIABILITY[item.source], ...item, shockTick: delay > 0 ? state.tick : undefined } as NewsItem;
   state.news.push(n);
   return n;
 }

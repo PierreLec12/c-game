@@ -94,7 +94,7 @@ function cargoLevel(id: number, extra: Partial<Parameters<typeof testLevel>[0]> 
   return testLevel({
     id, days: 30, startDate: "2027-03-01", capital: 20e6, creditLine: 150e6, instruments: ["BRENT", "WTI", "DUBAI"],
     unlocks: ["order", "spread", "roll", "close", "cancel_order", "draw_line", "repay_line", "post_margin", "convert_fx", "open_card", "ask_mentor", "answer_drill", "answer_quiz", "end_level", "request_limit", "accept_tender", "decline_tender", "fix_charter", "instruct_ship", "efp", "settle_claim", "contest_claim"],
-    limits: { var95: 50e6, netLots: { BRENT: 5000, WTI: 5000, RBOB: 5000, ULSD: 5000, HH: 5000, TTF: 5000, DUBAI: 5000 }, grossLots: 10000, stopLoss: 100e6, drawdown: 120e6, concentration: 1 },
+    limits: { var95: 50e6, netLots: { BRENT: 5000, WTI: 5000, RBOB: 5000, ULSD: 5000, HH: 5000, TTF: 5000, DUBAI: 5000 }, grossLots: 10000, stopLoss: 100e6, drawdown: 120e6, concentration: 50 },
     events: [
       { id: "offer", kind: "tender", day: 0, hour: 9, params: { counterparty: "NORTHSEA_MAJOR", side: "offer", grade: "FORTIES", incoterm: "FOB", port: "SULLOM_VOE", windowKind: "after_bl", windowDays: 5, laycanStart: 4, laycanDays: 2, openHours: 72 } },
       { id: "bid", kind: "tender", day: 0, hour: 10, params: { counterparty: "RHINE_REFINING", side: "bid", grade: "FORTIES", incoterm: "CIF", port: "ROTTERDAM", windowKind: "after_discharge", windowDays: 5, laycanStart: 8, laycanDays: 3, openHours: 96 } },

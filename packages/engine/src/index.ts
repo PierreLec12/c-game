@@ -22,3 +22,4 @@ export * from "./shipping";
 export * from "./physical";
 export * from "./voyages";
 export * from "./counterparties";
+export * from "./storage";

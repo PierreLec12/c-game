@@ -8,6 +8,8 @@ import { ckey } from "./liquidity";
 import { lotValueUsd } from "./finance";
 import { grossLots, netLots, tauOf } from "./pnl";
 import { physicalExposureBbl } from "./physical";
+import { counterpartyExposure } from "./counterparties";
+import { COUNTERPARTIES } from "./world_data";
 import type { Fig, RiskLimits, State } from "./types";
 
 export interface VaRResult { level: number; loss: number; days: number; instruments: string[]; leftOut: string[]; worst: number }
@@ -114,6 +116,12 @@ export function breaches(state: State, levelPnl: number): LimitCheck[] {
   if (gross > L.grossLots) out.push({ limit: "grossLots", value: gross, limitValue: L.grossLots, text: `Gross ${gross} lots is above the ${L.grossLots}-lot limit` });
   if (levelPnl < -L.stopLoss) out.push({ limit: "stop_loss", value: -levelPnl, limitValue: L.stopLoss, text: `Level P&L ${usd(levelPnl)} is through the stop-loss of $${Math.round(L.stopLoss).toLocaleString()}` });
   if (state.risk.maxDrawdown > L.drawdown) out.push({ limit: "drawdown", value: state.risk.maxDrawdown, limitValue: L.drawdown, text: `Drawdown $${Math.round(state.risk.maxDrawdown).toLocaleString()} from the peak is above the $${Math.round(L.drawdown).toLocaleString()} limit` });
+  if (L.concentration < 50) {
+    const cx = counterpartyExposure(state);
+    let worst: { id: string; mult: number } | null = null;
+    for (const [id, v] of Object.entries(cx.byId)) { const mult = v / state.capital; if (!worst || mult > worst.mult) worst = { id, mult }; }
+    if (worst && worst.mult > L.concentration) out.push({ limit: "concentration", value: worst.mult, limitValue: L.concentration, text: `${COUNTERPARTIES[worst.id]?.name ?? worst.id} is ${worst.mult.toFixed(1)}x capital of exposure, above the ${L.concentration.toFixed(1)}x concentration limit` });
+  }
   return out;
 }
 
@@ -130,4 +138,11 @@ export function reductionScale(state: State): number {
   const gross = grossLots(state);
   if (gross > L.grossLots) scale = Math.min(scale, (L.grossLots / gross) * 0.9);
   return Math.max(0, scale);
+}
+
+/** The worst stress row, for the risk manager to quote. */
+export function worstStress(state: State): string {
+  if (!state.risk.stress.length) return "";
+  const w = state.risk.stress.reduce((a, r) => (r.pnlChange < a.pnlChange ? r : a), state.risk.stress[0]);
+  return `Stress: a ${Math.round(w.priceShock * 100)}% price move${w.volShock ? ` with vol ${w.volShock > 0 ? "+" : ""}${Math.round(w.volShock * 100)} points` : ""} costs ${usd(w.pnlChange)} on this book.`;
 }

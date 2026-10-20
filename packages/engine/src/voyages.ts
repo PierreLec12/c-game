@@ -8,7 +8,8 @@ import { ledger } from "./finance";
 import { publishNews } from "./information";
 import { CHOKEPOINT_SPECS, GRADES, PORTS, SHIPPING, VESSEL_CLASSES } from "./world_data";
 import { NODE_BY_ID, etaTick, positionAlong, repathFromHere, speedKn, voyageCargo, voyageVessel, blockedNodes, daysFor, greatCircleNm, shortestPath, passageOptions } from "./shipping";
-import { chargeCargo, onBillOfLading, onDischarged, remarkCargo } from "./physical";
+import { chargeCargo, onBillOfLading, onDischarged, remarkCargo, cancelCargo } from "./physical";
+import { COUNTERPARTIES } from "./world_data";
 import type { AttributionRow, EngineEvent, State, Voyage } from "./types";
 
 const usd = (x: number) => (x < 0 ? "-$" : "$") + Math.abs(Math.round(x)).toLocaleString();
@@ -106,6 +107,11 @@ export function stepVoyages(state: State): { events: EngineEvent[]; rows: Attrib
 function beginLoading(state: State, v: Voyage, events: EngineEvent[], name: string): void {
   const vessel = voyageVessel(state, v);
   const cargo = voyageCargo(state, v);
+  if (cargo.requiresLc && !cargo.lcId) {
+    state.pnl.attribution.push(...cancelCargo(state, cargo, cargo.purchase.counterparty, "no letter of credit at the laycan", true));
+    events.push({ kind: "cargo", tick: state.tick, text: `${COUNTERPARTIES[cargo.purchase.counterparty].name} will not load ${name}: the letter of credit was never opened. The cargo is cancelled and the charter with it.`, pause: true, data: { cargoId: cargo.id } });
+    return;
+  }
   v.status = "loading"; vessel.status = "loading"; cargo.status = "loading";
   v.berthTick = state.tick;
   v.loadEnd = state.tick + SHIPPING.loadHours.value;

@@ -12,11 +12,12 @@
 import { HOURS_PER_DAY, dayOfTick, isBusinessDay, isoOfDay, ymOf, monthStart, addMonths } from "./calendar";
 import { priceParts, structure } from "./markets";
 import { ckey } from "./liquidity";
-import { ledger } from "./finance";
+import { ledger, closeLc } from "./finance";
+import { COUNTERPARTIES } from "./world_data";
 import { publishNews } from "./information";
 import { GRADES, PORTS, QUALITY_GRID, SHIPPING, VESSEL_CLASSES, type Basis } from "./world_data";
 import { expectedFreightUsd, etaTick, voyageVessel } from "./shipping";
-import type { AttributionRow, Cargo, CargoLeg, EngineEvent, State, Tender, WindowSpec } from "./types";
+import type { AttributionLeg, AttributionRow, Cargo, CargoLeg, EngineEvent, State, Tender, WindowSpec } from "./types";
 
 const usd = (x: number) => (x < 0 ? "-$" : "$") + Math.abs(Math.round(x)).toLocaleString();
 export const levelDayOf = (state: State, tick = state.tick): number => Math.floor(tick / HOURS_PER_DAY);
@@ -46,8 +47,9 @@ export function assessmentNow(state: State, basis: Basis): number { return basis
 export function windowDays(state: State, spec: WindowSpec, anchorDay: number): number[] {
   const abs = (d: number) => state.startDay + d;
   const out: number[] = [];
-  if (spec.kind === "month_avg_bl") {
-    const { year, month } = ymOf(abs(anchorDay));
+  if (spec.kind === "month_avg_bl" || spec.kind === "month_avg_offset") {
+    const ym = ymOf(abs(anchorDay));
+    const { year, month } = spec.kind === "month_avg_offset" ? addMonths(ym.year, ym.month, spec.offsetMonths ?? 1) : ym;
     const first = monthStart(year, month);
     const next = addMonths(year, month, 1);
     const end = monthStart(next.year, next.month);
@@ -66,6 +68,7 @@ export function windowText(spec: WindowSpec): string {
     case "after_bl": return `${spec.days ?? 5} days after B/L`;
     case "after_discharge": return `${spec.days ?? 5} days after discharge`;
     case "month_avg_bl": return "month average of the B/L month";
+    case "month_avg_offset": return `average of the month ${spec.offsetMonths ?? 1} after the B/L month`;
     case "deemed": return `${spec.days ?? 5} days after a deemed B/L on day ${spec.deemedDay}`;
   }
 }
@@ -117,13 +120,14 @@ export function physicalExposureAfterPrintsBbl(state: State): number {
   for (const c of state.cargoes) {
     if (c.status === "cancelled") continue;
     const legExp = (leg: CargoLeg | null, sign: 1 | -1) => {
-      if (!leg) return sign > 0 ? c.bbl : 0;
+      if (!leg) return sign > 0 ? (c.tankId === null ? c.bbl : 0) : 0;
       const m = legMark(state, c, leg);
       const left = m.unpriced.filter((d) => !(leg.windowDays && d <= today)).length;
       return sign * c.bbl * (left / m.n);
     };
     total += legExp(c.purchase, -1) + legExp(c.sale, 1);
   }
+  for (const t of state.tanks) for (const p of t.parcels) total += p.bbl;
   return total;
 }
 export function expectedDischargeDay(state: State, cargo: Cargo): number {
@@ -152,12 +156,12 @@ export function extraCostsUsd(cargo: Cargo): { demurrage: number; warRisk: numbe
 /** The whole mark of a cargo in USD, counting only what has not been paid or received yet. */
 export function cargoMark(state: State, cargo: Cargo): { valueUsd: number; purchasePerBbl: number; salePerBbl: number | null; expectedSalePerBbl: number; freightUsd: number; extra: ReturnType<typeof extraCostsUsd> } {
   const p = legMark(state, cargo, cargo.purchase);
-  const purchaseUsd = cargo.purchase.paidTick === null ? p.fixedUsd + sumParts(p.parts) : 0;
+  const purchaseUsd = cargo.purchase.paidTick === null ? p.fixedUsd + sumParts(p.parts) - cargo.prepaidUsd : 0;
   let saleUsd: number;
   let salePerBbl: number | null = null;
   const exp = expectedSaleParts(state, cargo);
   if (cargo.sale) { const s = legMark(state, cargo, cargo.sale); salePerBbl = s.perBbl; saleUsd = cargo.sale.paidTick === null ? s.fixedUsd + sumParts(s.parts) : 0; }
-  else saleUsd = cargo.status === "cancelled" ? 0 : sumParts(exp);
+  else saleUsd = cargo.status === "cancelled" || cargo.tankId !== null ? 0 : sumParts(exp);
   const freightUsd = cargo.freight.paidTick === null ? (cargo.freight.fixedUsd ?? cargo.freight.expectedUsd) : 0;
   const extra = extraCostsUsd(cargo);
   const valueUsd = cargo.status === "cancelled" ? 0 : saleUsd - purchaseUsd - freightUsd - extra.demurrage - extra.warRisk - extra.quality;
@@ -177,10 +181,12 @@ export function physicalExposureBbl(state: State): { bbl: number; byCargo: Recor
     const p = legMark(state, c, c.purchase);
     let e = -c.bbl * (p.unpriced.length / p.n);
     if (c.sale) { const s = legMark(state, c, c.sale); e += c.bbl * (s.unpriced.length / s.n); }
-    else e += c.bbl;
+    else if (c.tankId === null) e += c.bbl;
     byCargo[c.id] = e;
     total += e;
   }
+  // oil in a tank is owned outright: long until it is sold forward (the parcel leaves the tank's mark at the sale)
+  for (const t of state.tanks) for (const p of t.parcels) { byCargo[p.cargoId ?? p.id] = (byCargo[p.cargoId ?? p.id] ?? 0) + p.bbl; total += p.bbl; }
   return { bbl: total, byCargo };
 }
 
@@ -251,7 +257,7 @@ export function remarkCargo(state: State, cargo: Cargo, reason: string): Attribu
       }
       cargo.marketBase = {};
     }
-  } else {
+  } else if (cargo.tankId === null) {
     const exp = expectedSaleParts(state, cargo);
     for (const k of new Set([...Object.keys(exp), ...Object.keys(cargo.marketBase)])) {
       const delta = (exp[k] ?? 0) - (cargo.marketBase[k] ?? 0);
@@ -309,12 +315,27 @@ export function settlePhysical(state: State): { rows: AttributionRow[]; events: 
 export function payDues(state: State): EngineEvent[] {
   const events: EngineEvent[] = [];
   for (const cargo of state.cargoes) {
+    if (cargo.status === "cancelled") continue;
     const name = `${GRADES[cargo.grade].name} ${cargo.id}`;
     for (const [label, leg, sign] of [["purchase", cargo.purchase, -1], ["sale", cargo.sale, 1]] as [string, CargoLeg | null, 1 | -1][]) {
       if (!leg || leg.paidTick !== null || leg.amountUsd === null || leg.dueTick === null || leg.dueTick > state.tick) continue;
+      // a slow payer pays late, once, with a word
+      const cp = COUNTERPARTIES[leg.counterparty];
+      const cs = state.counterparties[leg.counterparty];
+      if (sign > 0 && cp && cp.lateDays > 0 && cs && !(leg as CargoLeg & { lateFlagged?: boolean }).lateFlagged) {
+        (leg as CargoLeg & { lateFlagged?: boolean }).lateFlagged = true;
+        leg.dueTick = state.tick + cp.lateDays * HOURS_PER_DAY;
+        cs.late += 1;
+        publishNews(state, { source: "wire", headline: `${cp.name} is late paying ${usd(leg.amountUsd)} on ${name}`, body: `"Processing." Expect it in about ${cp.lateDays} days. Your line carries the gap and charges interest for it; their rating should carry it too.` });
+        events.push({ kind: "credit", tick: state.tick, text: `${cp.name} is late on ${usd(leg.amountUsd)} for ${name}: about ${cp.lateDays} days.`, pause: true, data: { cargoId: cargo.id } });
+        continue;
+      }
       leg.paidTick = state.tick;
-      ledger(state, "other", sign * leg.amountUsd, `${sign > 0 ? "Received" : "Paid"} ${usd(leg.amountUsd)} for ${name} ${label} (${leg.fixed!.toFixed(2)} $/bbl x ${cargo.bbl.toLocaleString()} bbl)`);
-      events.push({ kind: "cargo", tick: state.tick, text: `${sign > 0 ? "Received" : "Paid"} ${usd(leg.amountUsd)}: ${name} ${label} invoice.`, data: { cargoId: cargo.id } });
+      const net = sign < 0 ? leg.amountUsd - cargo.prepaidUsd : leg.amountUsd;
+      ledger(state, "other", sign * net, `${sign > 0 ? "Received" : "Paid"} ${usd(net)} for ${name} ${label} (${leg.fixed!.toFixed(2)} $/bbl x ${cargo.bbl.toLocaleString()} bbl${sign < 0 && cargo.prepaidUsd > 0 ? `, less ${usd(cargo.prepaidUsd)} prepaid` : ""})`);
+      if (sign < 0) { closeLc(state, cargo); cargo.prepaidUsd = 0; }
+      if (cs) cs.dealsWithPlayer += 1;
+      events.push({ kind: "cargo", tick: state.tick, text: `${sign > 0 ? "Received" : "Paid"} ${usd(net)}: ${name} ${label} invoice.`, data: { cargoId: cargo.id } });
     }
     for (const claim of cargo.claims) {
       if ((claim.status === "settled" || claim.status === "lost") && claim.resolvedTick !== undefined && claim.resolvedTick <= state.tick && !(claim as Claim & { paid?: boolean }).paid) {
@@ -338,14 +359,102 @@ export function cargoFromOffer(state: State, t: Tender): Cargo {
     id, tenderId: t.id, grade: t.grade, bbl: t.bbl, purchase, sale: null, status: "contracted", loadPort: t.port, dischargePort, laycan: t.laycan, dischargeWindow: null,
     vesselId: null, voyageId: null, blTick: null, dischargeTick: null, quality: { api: grade.api, sulphur: grade.sulphur }, claims: [],
     freight: { expectedUsd: 0, fixedUsd: null, paidTick: null, base: 0 }, demurrageUsd: 0, demurragePaidTick: null, warRiskUsd: 0, extraCostsBase: 0, marketBase: {}, createdTick: state.tick,
+    requiresLc: t.requiresLc, lcId: null, prepaidUsd: 0, insured: false, tankId: null, parcelId: null, cancelled: null,
   };
-  cargo.freight.expectedUsd = expectedFreightUsd(state, cargo);
+  cargo.freight.expectedUsd = isPipeline(cargo) ? 0 : expectedFreightUsd(state, cargo);
   return cargo;
+}
+
+/** A batch at an inland hub (Cushing) moves by pipeline: no ship, delivered on the laycan's first day. */
+export function isPipeline(cargo: Cargo): boolean {
+  return PORTS[cargo.loadPort].node === "";
+}
+
+/** Prepay a producer: the forward value of the cargo now, for a discount on the differential; trued up at the invoice. */
+export function prepayCargo(state: State, cargo: Cargo, discountPerBbl: number): number {
+  const m = legMark(state, cargo, cargo.purchase);
+  const amount = m.perBbl * cargo.bbl;
+  cargo.prepaidUsd = amount;
+  cargo.purchase.diff -= discountPerBbl;
+  return amount;
+}
+
+/** Cancel a cargo (a seller's default, a missing letter of credit): every leg comes off the mark; a sold-on cargo owes its receiver. */
+export function cancelCargo(state: State, cargo: Cargo, by: string, reason: string, penaltyToReceiver: boolean): AttributionRow[] {
+  const rows: AttributionRow[] = [];
+  const name = `${GRADES[cargo.grade].name} ${cargo.id}`;
+  const sign = (k: string): AttributionLeg => (k === "flat" ? "flat" : k === "basis" ? "basis" : "time_spread");
+  for (const [k, v] of Object.entries(cargo.purchase.base)) if (Math.abs(v) >= 0.005) rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: sign(k), amount: v, text: `${name} cancelled (${reason}): the purchase comes off the mark.` });
+  cargo.purchase.base = {};
+  if (cargo.sale) {
+    for (const [k, v] of Object.entries(cargo.sale.base)) if (Math.abs(v) >= 0.005) rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: sign(k), amount: -v, text: `${name} cancelled: the onward sale to ${cargo.sale.counterparty} cannot be delivered and comes off the mark.` });
+    cargo.sale.base = {};
+    if (penaltyToReceiver) {
+      const s = legMark(state, cargo, cargo.sale);
+      const penalty = (0.5 + Math.max(0, s.perBbl - legMark(state, cargo, cargo.purchase).perBbl)) * cargo.bbl;
+      rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "credit", amount: -penalty, text: `${name}: failed to deliver the onward sale; the receiver claims the market move plus a stylised $0.50/bbl.` });
+      ledger(state, "other", -penalty, `Fail-to-deliver settlement on ${name}`);
+    }
+  }
+  for (const [k, v] of Object.entries(cargo.marketBase)) if (Math.abs(v) >= 0.005) rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: sign(k), amount: -v, text: `${name} cancelled: the unsold mark comes off.` });
+  cargo.marketBase = {};
+  const freightBase = cargo.freight.base;
+  if (freightBase > 0 && cargo.freight.paidTick === null) {
+    if (cargo.freight.fixedUsd !== null) {
+      const fee = cargo.freight.fixedUsd * 0.15;
+      rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "freight", amount: freightBase - fee, text: `${name} cancelled: the charter is cancelled; the owner keeps 15% of the lump sum (stylised).` });
+      ledger(state, "other", -fee, `Charter cancellation fee on ${name}`);
+      const v = state.voyages.find((x) => x.id === cargo.voyageId);
+      const vessel = state.vessels.find((x) => x.id === cargo.vesselId);
+      if (v) v.status = "done";
+      if (vessel) { vessel.status = "available"; vessel.voyageId = null; }
+    } else rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "freight", amount: freightBase, text: `${name} cancelled: no freight to pay.` });
+    cargo.freight.base = 0;
+  }
+  if (cargo.prepaidUsd > 0) {
+    rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "credit", amount: -cargo.prepaidUsd, text: `${name}: the prepayment of ${usd(cargo.prepaidUsd)} to ${by} is lost in the default.` });
+  }
+  if (cargo.insured) {
+    const loss = -rows.filter((r) => r.leg === "credit").reduce((a, r) => a + r.amount, 0) - rows.filter((r) => r.leg !== "credit" && r.leg !== "freight").reduce((a, r) => a + r.amount, 0);
+    if (loss > 0) {
+      const recovery = loss * 0.9;
+      rows.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "credit", amount: recovery, text: `${name}: the insurer pays 90% of the loss on the default: ${usd(recovery)}.` });
+      ledger(state, "other", recovery, `Insurance recovery on ${name}`);
+    }
+  }
+  cargo.status = "cancelled";
+  cargo.cancelled = { tick: state.tick, by, reason };
+  return rows;
+}
+
+/** Pipeline batches: delivered at the laycan's first day with no ship; a required letter of credit missing cancels the deal. */
+export function stepPipelineCargoes(state: State): { events: EngineEvent[]; rows: AttributionRow[] } {
+  const events: EngineEvent[] = [];
+  const rows: AttributionRow[] = [];
+  for (const cargo of state.cargoes) {
+    if (!isPipeline(cargo) || cargo.status !== "contracted") continue;
+    if (state.tick < cargo.laycan[0] * HOURS_PER_DAY + 9) continue;
+    if (cargo.requiresLc && !cargo.lcId) {
+      rows.push(...cancelCargo(state, cargo, cargo.purchase.counterparty, "no letter of credit by the transfer date", true));
+      events.push({ kind: "cargo", tick: state.tick, text: `${GRADES[cargo.grade].name} ${cargo.id} cancelled: the seller wanted a letter of credit before transfer and none was opened.`, pause: true, data: { cargoId: cargo.id } });
+      continue;
+    }
+    onBillOfLading(state, cargo);
+    onDischarged(state, cargo);
+    rows.push(...remarkCargo(state, cargo, "pipeline transfer"));
+    events.push({ kind: "cargo", tick: state.tick, text: `${GRADES[cargo.grade].name} ${cargo.id}: ${cargo.bbl.toLocaleString()} bbl transferred at ${PORTS[cargo.loadPort].name}. The purchase prices over ${cargo.purchase.windowDays!.map((d) => `day ${d}`).join(", ")}. Store it in a tank or sell it.`, pause: true, data: { cargoId: cargo.id } });
+  }
+  return { events, rows };
+}
+
+export function cargoNotUsed(): void {
+  void 0;
 }
 
 export function attachSale(state: State, cargo: Cargo, t: Tender): void {
   const anchor = cargo.dischargeTick !== null ? levelDayOf(state, cargo.dischargeTick) : expectedDischargeDay(state, cargo);
   cargo.sale = { counterparty: t.counterparty, basis: t.basis, window: t.window, diff: t.diff, incoterm: t.incoterm, port: t.port, windowDays: cargo.dischargeTick !== null && t.window.kind === "after_discharge" ? windowDays(state, t.window, anchor) : t.window.kind === "deemed" ? windowDays(state, t.window, anchor) : null, prints: {}, fixed: null, base: {}, unpricedDays: [], marked: false, expectedAnchorDay: anchor, amountUsd: null, dueTick: null, paidTick: null };
+  if (cargo.blTick !== null && (t.window.kind === "month_avg_bl" || t.window.kind === "month_avg_offset" || t.window.kind === "after_bl")) { cargo.sale.windowDays = windowDays(state, t.window, levelDayOf(state, cargo.blTick)); cargo.sale.expectedAnchorDay = levelDayOf(state, cargo.blTick); }
   cargo.dischargeWindow = t.laycan;
   if (cargo.dischargePort !== t.port) cargo.dischargePort = t.port;
 }

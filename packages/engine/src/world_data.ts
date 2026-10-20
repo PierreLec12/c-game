@@ -208,3 +208,32 @@ export const REFERENCE_VOYAGE_DAYS: { from: string; to: string; via?: string; da
   { from: "NOVOROSSIYSK", to: "JAMNAGAR", via: "SUEZ", days: S(16, "section 14") },
   { from: "SABINE_PASS", to: "GATE", days: S(13, "section 14") },
 ];
+
+/** Tanks (section 4): a lease has a monthly cost per barrel, a minimum term and a fill rate. Rotterdam leases are in EUR. */
+export interface TankSpec { port: string; costPerBblMonth: Stylised<number>; currency: "USD" | "EUR"; fillRateBblPerDay: Stylised<number>; capacityBbl: Stylised<number>; minMonths: Stylised<number> }
+export const STORAGE_TANKS: Record<string, TankSpec> = {
+  CUSHING: { port: "CUSHING", costPerBblMonth: S(0.35, "section 14: $0.35/bbl/month"), currency: "USD", fillRateBblPerDay: S(150000, "pipeline receipt rate, stylised"), capacityBbl: S(3000000, "available to lease, stylised"), minMonths: S(1, "one month minimum term") },
+  ROTTERDAM: { port: "ROTTERDAM", costPerBblMonth: S(0.55, "section 14 gives $0.60; leased in EUR at about 0.55 EUR/bbl/month"), currency: "EUR", fillRateBblPerDay: S(400000, "jetty rate, stylised"), capacityBbl: S(2000000, "stylised"), minMonths: S(1, "one month minimum term") },
+  FUJAIRAH: { port: "FUJAIRAH", costPerBblMonth: S(0.55, "section 14: $0.55"), currency: "USD", fillRateBblPerDay: S(400000, "stylised"), capacityBbl: S(2000000, "stylised"), minMonths: S(1, "one month minimum term") },
+  SINGAPORE: { port: "SINGAPORE", costPerBblMonth: S(0.7, "section 14: $0.70"), currency: "USD", fillRateBblPerDay: S(400000, "stylised"), capacityBbl: S(2000000, "stylised"), minMonths: S(1, "one month minimum term") },
+  SALDANHA_BAY: { port: "SALDANHA_BAY", costPerBblMonth: S(0.3, "cheap, far from everything; stylised"), currency: "USD", fillRateBblPerDay: S(600000, "stylised"), capacityBbl: S(6000000, "stylised"), minMonths: S(2, "two months minimum term") },
+};
+
+/** Credit and counterparty parameters (section 7), stylised. */
+export const CREDIT = {
+  prepayDiscountPerBbl: S(0.35, "$/bbl off the differential for paying before pricing: the producer's cost of money, stylised"),
+  insurancePremiumShare: S(0.006, "non-performance cover costs 0.6% of the cargo's value (stylised)"),
+  insuranceRecovery: S(0.9, "the insurer pays 90% of the loss on a covered default (stylised)"),
+  failToDeliverPenaltyPerBbl: S(0.5, "what a receiver claims when a sold cargo is not delivered, over the market move (stylised)"),
+  charterCancellationShare: S(0.15, "an owner keeps 15% of the lump sum when a fixed charter is cancelled (stylised)"),
+  counterToleranceReliable: S(0.1, "$/bbl a reliable counterparty will move on its differential"),
+  counterToleranceAggressive: S(0.3, "$/bbl an aggressive counterparty will move"),
+  disputeEdgePenalty: S(0.15, "$/bbl worse a counterparty quotes you after a dispute (memory, stylised)"),
+  lateDaysSmallRefiner: S(12, "days the small refiner pays late"),
+};
+export const RATING_SCORES: Record<string, number> = { AAA: 95, AA: 88, A: 80, BBB: 70, BB: 58, B: 45, CCC: 30, D: 5 };
+export function ratingFor(score: number): string {
+  const entries = Object.entries(RATING_SCORES).sort((a, b) => b[1] - a[1]);
+  for (const [r, s] of entries) if (score >= s - 4) return r;
+  return "D";
+}

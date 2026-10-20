@@ -80,7 +80,9 @@ export function spreadTarget(inst: InstrumentId, gapMb: number, price: number, r
   const F = FACTORS;
   const carry = fullCarry(inst, price, rate);
   const scale = inst === "RBOB" || inst === "ULSD" ? 1 / 42 : inst === "HH" ? 0.05 : inst === "TTF" ? 0.5 : 1;
-  if (gapMb >= 0) return Math.min(F.contangoPerMbSurplus.value * gapMb * scale, carry * 0.95);
+  // near tank tops (a very large surplus) the contango can exceed the marginal cost of carry: super-contango (stylised)
+  const cap = gapMb > 40 ? carry * 1.3 : carry * 0.95;
+  if (gapMb >= 0) return Math.min(F.contangoPerMbSurplus.value * gapMb * scale, cap);
   return Math.max(F.backwardationPerMbDeficit.value * gapMb * scale, -F.maxBackwardation.value * scale);
 }
 
@@ -177,10 +179,13 @@ export function stepFactorsHourly(f: Factors, world: WorldState, s: Stream, refs
     const carry = fullCarry(inst, price, world.baseRate);
     const noise = F.spreadNoisePerDay.value * scale * (vol[inst] / 0.3);
     let x = ouH(f.spread1[inst], a.spread1[inst], F.spreadMeanReversionPerDay.value, noise);
-    // contango is bounded by full carry: above 90% of carry the pull back is strong, and never beyond carry plus the noise band
-    if (x > carry * 0.9) x -= 0.5 * (x - carry * 0.9);
+    // contango is bounded by full carry: above 90% of carry the pull back is strong, and never beyond carry plus the noise band,
+    // except at tank tops where the bound is 1.3x carry (super-contango, stylised)
+    const tankTops = (inst === "WTI" ? world.usInvGap : inst === "BRENT" ? world.oecdInvGap : 0) > 40;
+    const ceiling = tankTops ? carry * 1.3 : carry * 0.9;
+    if (x > ceiling) x -= 0.5 * (x - ceiling);
     const band = F.carryNoiseBand.value * scale;
-    x = Math.min(x, carry + band);
+    x = Math.min(x, (tankTops ? carry * 1.35 : carry) + band);
     x = Math.max(x, -F.maxBackwardation.value * scale);
     spread1[inst] = x;
   }

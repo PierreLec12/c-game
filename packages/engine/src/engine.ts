@@ -20,7 +20,11 @@ import { initFleet } from "./shipping";
 import { cargoesMarkUsd, payDues, settlePhysical, physicalExposureBbl, physicalExposureAfterPrintsBbl } from "./physical";
 import { netLots } from "./pnl";
 import { stepVoyages } from "./voyages";
-import { expireTenders } from "./counterparties";
+import { expireTenders, initCounterparties, moveRating } from "./counterparties";
+import { chargeTanks, remarkTanks, tanksMarkUsd } from "./storage";
+import { stepPipelineCargoes } from "./physical";
+import { checkCovenant } from "./finance";
+import { worstStress } from "./risk";
 import { CHOKEPOINTS } from "./refdata";
 import { COUNTERPARTIES } from "./world_data";
 import { clone } from "./clone";
@@ -90,13 +94,14 @@ export function newGame(spec: LevelSpec, seed: number, opts: { par?: number } = 
     },
     news: [], releases: [], events: [],
     cargoes: [], tenders: [], vessels: initFleet(), voyages: [], chokepoints: Object.fromEntries(CHOKEPOINTS.map((c) => [c.id, { id: c.id, status: "open" as const, since: 0, note: "open" }])), portCongestion: {},
+    lcs: [], tanks: [], counterparties: initCounterparties(), infoDelayHours: spec.infoDelayHours ?? 0, pendingNewsDelay: 0,
     level: {
       id: spec.id, tier: spec.tier, title: spec.title, startDay, endTick: spec.days * HOURS_PER_DAY, status: "running",
       objectives: spec.objectives.map((o) => ({ id: o.id, text: o.text, status: "pending" })), cardsUnlocked: [], cardsOpened: [],
       drills: spec.drills ? spec.drills(seed) : [], quiz: [], score: null, par, unlockedActions: [...spec.unlocks], instruments: [...spec.instruments], endedTick: null, mentorLines: [],
     },
     history: pre.history,
-    counters: { lot: 0, order: 0, fill: 0, ledger: 0, news: 0, cargo: 0, tender: 0, voyage: 0, claim: 0 },
+    counters: { lot: 0, order: 0, fill: 0, ledger: 0, news: 0, cargo: 0, tender: 0, voyage: 0, claim: 0, lc: 0, tank: 0, parcel: 0 },
     capital: spec.capital,
     paused: null,
   };
@@ -149,7 +154,7 @@ function rebuildQuotes(state: State, open: boolean): void {
 }
 
 function recordCurve(state: State): void {
-  const u = unrealised(state) + cargoesMarkUsd(state);
+  const u = unrealised(state) + cargoesMarkUsd(state) + tanksMarkUsd(state);
   const eq = equity(state, u);
   state.pnl.unrealised = u;
   state.pnl.total = eq - state.capital;
@@ -261,7 +266,7 @@ export function tick(state: State, actions: Action[], rng: Rng): TickResult {
   }
   const fired = fireDue(next, rng.stream("events", next.tick));
   events.push(...fired);
-  for (const n of next.news) if (n.tick === next.tick && !events.some((e) => e.text === n.headline)) events.push({ kind: "news", tick: next.tick, text: n.headline, pause: false });
+  for (const n of next.news) if (n.tick === next.tick && !events.some((e) => e.text === n.headline)) events.push({ kind: "news", tick: next.tick, text: n.shockTick !== undefined ? `${n.headline} (the market moved ${next.tick - n.shockTick} hours ago)` : n.headline, pause: n.shockTick !== undefined });
   rebuildQuotes(next, trading);
   if (trading) {
     const fills = matchResting(next);
@@ -271,6 +276,10 @@ export function tick(state: State, actions: Action[], rng: Rng): TickResult {
     const v = stepVoyages(next);
     events.push(...v.events);
     next.pnl.attribution.push(...v.rows);
+    const pl = stepPipelineCargoes(next);
+    events.push(...pl.events);
+    next.pnl.attribution.push(...pl.rows);
+    if (hour === 0) next.pnl.attribution.push(...chargeTanks(next));
     for (const t of expireTenders(next)) {
       events.push({ kind: "tender", tick: next.tick, text: `Tender ${t.id} from ${COUNTERPARTIES[t.counterparty].name} expired${t.trap ? `. ${t.trap}` : "."}`, data: { tenderId: t.id } });
     }
@@ -344,6 +353,7 @@ function settle(state: State, spec: LevelSpec): EngineEvent[] {
     const ph = settlePhysical(state);
     state.pnl.attribution.push(...ph.rows);
     events.push(...ph.events);
+    state.pnl.attribution.push(...remarkTanks(state));
   }
   state.history.push({ factors: state.factors, day: dayOfTick(state.startDay, state.tick) });
   rebalanceMargin(state);
@@ -359,8 +369,9 @@ function settle(state: State, spec: LevelSpec): EngineEvent[] {
     state.risk.messages.push({ tick: state.tick, text, severity: "breach" });
     events.push({ kind: "margin_call", tick: state.tick, text, pause: true, data: { amount: mc.amount } });
   } else if (mc.met) events.push({ kind: "margin_met", tick: state.tick, text: "Margin call met." });
-  state.pnl.settles.push({ tick: state.tick, pnl: equity(state, cargoesMarkUsd(state)) - state.capital });
+  state.pnl.settles.push({ tick: state.tick, pnl: equity(state, cargoesMarkUsd(state) + tanksMarkUsd(state)) - state.capital });
   events.push(...riskAtClose(state, spec, physBeforePrints));
+  events.push(...checkCovenant(state));
   events.push({ kind: "session_close", tick: state.tick, text: `Session close ${formatClock(state.startDay, state.tick)}: P&L today ${usd(state.pnl.today)}, level ${usd(equity(state, 0) - state.capital)}`, pause: true });
   return events;
 }
@@ -372,7 +383,7 @@ function riskAtClose(state: State, spec: LevelSpec, physBeforePrints?: number): 
   recordCurve(state);
   state.risk.closesTotal += 1;
   // the physical exposure a trader could have hedged by this close: the day's prints land at the settle itself
-  state.risk.closes.push({ tick: state.tick, physBbl: physBeforePrints ?? physicalExposureBbl(state).bbl, net: netLots(state), var95: state.risk.var95?.v ?? 0, pnl: state.pnl.total });
+  state.risk.closes.push({ tick: state.tick, physBbl: physBeforePrints ?? physicalExposureBbl(state).bbl, net: netLots(state), var95: state.risk.var95?.v ?? 0, pnl: state.pnl.total, cashUsd: state.finance.cashUSD });
   const v = state.risk.var95;
   if (!v || v.v <= state.risk.limits.var95) state.risk.closesInsideLimit += 1;
   else state.risk.varBreachedAtClose = true;
@@ -393,8 +404,16 @@ function riskAtClose(state: State, spec: LevelSpec, physBeforePrints?: number): 
   if (soft.length) {
     const what = soft.map((b) => b.text).join("; ");
     const formulas = soft.map((b) => limitFormula(b.limit)).join(". ");
-    if (strike === 1) {
-      const text = `${riskManager(spec)}: ${what}. Reduce by the next close or I reduce it for you. (${formulas})`;
+    // a concentration breach cannot be cut at the touch: it is a warning every close and a life after five
+    const onlyConcentration = soft.every((b) => b.limit === "concentration");
+    if (onlyConcentration && strike < 5) {
+      const text = `${riskManager(spec)}: ${what}. ${strike === 1 ? "No more exposure to that name; reduce it as the invoices clear." : `Close ${strike} in breach; at five that is a life.`} (${formulas})`;
+      state.risk.messages.push({ tick: state.tick, text, severity: "warning" });
+      events.push({ kind: "limit_warning", tick: state.tick, text, pause: strike === 1, data: { limits: soft.map((b) => b.limit) } });
+    } else if (onlyConcentration) {
+      events.push(...loseLife(state, spec, `${riskManager(spec)}: ${what} for five closes. That is a life.`));
+    } else if (strike === 1) {
+      const text = `${riskManager(spec)}: ${what}. Reduce by the next close or I reduce it for you. (${formulas}) ${worstStress(state)}`;
       state.risk.messages.push({ tick: state.tick, text, severity: "warning" });
       events.push({ kind: "limit_warning", tick: state.tick, text, pause: true, data: { limits: soft.map((b) => b.limit) } });
     } else if (strike === 2) {
@@ -407,7 +426,7 @@ function riskAtClose(state: State, spec: LevelSpec, physBeforePrints?: number): 
   for (const b of fatal) {
     events.push(...loseLife(state, spec, `${riskManager(spec)}: ${b.text}. Book flattened. That is a life.`));
     if (b.limit === "stop_loss") state.risk.stopLossRef = state.pnl.total;
-    if (b.limit === "drawdown") { state.risk.peakEquity = equity(state, 0); state.risk.maxDrawdown = 0; }
+    if (b.limit === "drawdown") { state.risk.peakEquity = equity(state, cargoesMarkUsd(state) + tanksMarkUsd(state)); state.risk.maxDrawdown = 0; }
   }
   return events;
 }
@@ -418,6 +437,7 @@ function limitFormula(limit: string): string {
     case "var95": return "VaR: the 95th percentile of simulated one-day losses on the current book over the last 250 sessions";
     case "netLots": return "net lots: long minus short per instrument";
     case "grossLots": return "gross lots: all open lots, long plus short";
+    case "concentration": return "concentration: what you are owed by one counterparty plus what you have bought from it and not received, as a multiple of capital";
     default: return limit;
   }
 }

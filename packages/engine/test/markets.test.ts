@@ -28,7 +28,10 @@ describe("the factor model", () => {
   it("backwardation widens when prompt tightness rises; contango is capped at full carry", () => {
     expect(spreadTarget("BRENT", -10, 75, 0.04)).toBeGreaterThan(spreadTarget("BRENT", -30, 75, 0.04));
     expect(spreadTarget("BRENT", -30, 75, 0.04)).toBeLessThan(0);
-    expect(spreadTarget("BRENT", 500, 75, 0.04)).toBeLessThanOrEqual(fullCarry("BRENT", 75, 0.04));
+    expect(spreadTarget("BRENT", 30, 75, 0.04)).toBeLessThanOrEqual(fullCarry("BRENT", 75, 0.04));
+    // at tank tops (a surplus above 40 mb) the cap is super-contango: 1.3 times carry
+    expect(spreadTarget("BRENT", 500, 75, 0.04)).toBeLessThanOrEqual(fullCarry("BRENT", 75, 0.04) * 1.3 + 1e-9);
+    expect(spreadTarget("BRENT", 500, 75, 0.04)).toBeGreaterThan(fullCarry("BRENT", 75, 0.04));
     expect(fullCarry("BRENT", 75, 0.04)).toBeCloseTo(0.6 + 75 * 0.04 / 12, 10);
   });
   it("one-month contango never exceeds full carry plus the noise band for more than two sessions", () => {

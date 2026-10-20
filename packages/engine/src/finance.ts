@@ -3,6 +3,8 @@
  * so cash is always the sum of its ledger (tested as an invariant).
  */
 import { FINANCE, INSTRUMENTS, INTER_COMMODITY_OFFSET, MAINTENANCE_MARGIN_SHARE, SPREAD_MARGIN_OFFSET, type InstrumentId } from "./refdata";
+import { CREDIT, GRADES } from "./world_data";
+import type { Cargo, EngineEvent, LetterOfCredit } from "./types";
 import type { FinanceState, LedgerKind, State } from "./types";
 import { ckey, nextId } from "./liquidity";
 
@@ -80,7 +82,7 @@ export function rebalanceMargin(state: State): string[] {
   if (delta > 0.005) {
     const short = delta - state.finance.cashUSD;
     if (short > 0 && !state.finance.lineCut) {
-      const draw = Math.min(short, state.finance.lineLimit - state.finance.lineDrawn);
+      const draw = Math.min(short, lineAvailable(state));
       if (draw > 0) {
         state.finance.lineDrawn += draw;
         state.finance.autoDrawn += draw;
@@ -120,7 +122,7 @@ export function checkMarginCall(state: State, nextCloseTick: number): { raised: 
   const f = state.finance;
   if (f.cashUSD < -0.005) {
     const need = -f.cashUSD;
-    const avail = f.lineCut ? 0 : f.lineLimit - f.lineDrawn;
+    const avail = lineAvailable(state);
     const draw = Math.min(need, avail);
     if (draw > 0) {
       f.lineDrawn += draw;
@@ -165,7 +167,7 @@ export function drawLine(state: State, amount: number): string | null {
   const f = state.finance;
   if (f.lineCut) return "the bank has cut the line after the covenant breach";
   if (amount <= 0) return "amount must be positive";
-  if (f.lineDrawn + amount > f.lineLimit + 1e-6) return `the line has $${Math.round(f.lineLimit - f.lineDrawn).toLocaleString()} available, not $${Math.round(amount).toLocaleString()}`;
+  if (amount > lineAvailable(state) + 1e-6) return `the line has $${Math.round(lineAvailable(state)).toLocaleString()} available (after open letters of credit), not $${Math.round(amount).toLocaleString()}`;
   f.lineDrawn += amount;
   ledger(state, "line_draw", amount, `Drew $${Math.round(amount).toLocaleString()} on the credit line`);
   return null;
@@ -205,4 +207,51 @@ export function markEur(state: State): number {
   if (Math.abs(leg) >= 0.005) state.pnl.attribution.push({ tick: state.tick, inst: "TTF", month: "", leg: "fx", amount: leg, text: `EURUSD moved from ${f.eurFxMark.toFixed(4)} to ${fx.toFixed(4)} on a EUR balance of ${Math.round(f.cashEUR).toLocaleString()}.` });
   f.eurFxMark = fx;
   return leg;
+}
+
+/** What the line can still lend: the limit less what is drawn and less the face of every open letter of credit. */
+export function lineAvailable(state: State): number {
+  if (state.finance.lineCut) return 0;
+  return Math.max(0, state.finance.lineLimit - state.finance.lineDrawn - lcCommitted(state));
+}
+export function lcCommitted(state: State): number {
+  return state.lcs.filter((l) => l.closedTick === null).reduce((a, l) => a + l.faceUsd, 0);
+}
+
+/** Open a letter of credit in favour of a cargo's seller: a fee of 0.25% of face per quarter, and the face uses the line. */
+export function openLc(state: State, cargo: Cargo, faceUsd: number): { lc: LetterOfCredit | null; refusal: string | null } {
+  const quarters = Math.max(1, Math.ceil(((cargo.laycan[1] + 45) * 24 - state.tick) / (90 * 24)));
+  const fee = faceUsd * FINANCE.lcFeePerQuarter.value * quarters;
+  if (faceUsd > lineAvailable(state) + 1e-6) return { lc: null, refusal: `a letter of credit for $${Math.round(faceUsd).toLocaleString()} needs that much of the line; $${Math.round(lineAvailable(state)).toLocaleString()} is available` };
+  const lc: LetterOfCredit = { id: `LC${++state.counters.lc}`, cargoId: cargo.id, beneficiary: cargo.purchase.counterparty, faceUsd, feeUsd: fee, openedTick: state.tick, closedTick: null };
+  state.lcs.push(lc);
+  cargo.lcId = lc.id;
+  ledger(state, "fee", -fee, `Letter of credit ${lc.id} fee: ${(FINANCE.lcFeePerQuarter.value * 100).toFixed(2)}% of $${Math.round(faceUsd).toLocaleString()} for ${quarters} quarter${quarters > 1 ? "s" : ""}`);
+  state.pnl.attribution.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "finance", amount: -fee, text: `Letter of credit ${lc.id} for ${GRADES[cargo.grade].name} ${cargo.id}: a fee of ${(FINANCE.lcFeePerQuarter.value * 100).toFixed(2)}% of face per quarter (stylised), and $${Math.round(faceUsd).toLocaleString()} of the line held until the invoice is paid.` });
+  return { lc, refusal: null };
+}
+export function closeLc(state: State, cargo: Cargo): void {
+  const lc = state.lcs.find((l) => l.id === cargo.lcId && l.closedTick === null);
+  if (lc) lc.closedTick = state.tick;
+}
+
+/** Non-performance cover on a cargo's counterparties: a premium now; a recovery if a covered default costs money. */
+export function insureCargo(state: State, cargo: Cargo, valueUsd: number): number {
+  const premium = valueUsd * CREDIT.insurancePremiumShare.value;
+  cargo.insured = true;
+  ledger(state, "fee", -premium, `Non-performance insurance on ${GRADES[cargo.grade].name} ${cargo.id}: ${(CREDIT.insurancePremiumShare.value * 100).toFixed(1)}% of $${Math.round(valueUsd).toLocaleString()}`);
+  state.pnl.attribution.push({ tick: state.tick, inst: "BRENT", month: cargo.id, leg: "finance", amount: -premium, text: `Insurance premium on ${GRADES[cargo.grade].name} ${cargo.id}: ${(CREDIT.insurancePremiumShare.value * 100).toFixed(1)}% of the cargo's value (stylised); pays ${Math.round(CREDIT.insuranceRecovery.value * 100)}% of a loss on a counterparty default.` });
+  return premium;
+}
+
+/** The covenant: a drawdown beyond the stated share of capital cuts the line to what is already drawn or committed. */
+export function checkCovenant(state: State): EngineEvent[] {
+  const f = state.finance;
+  if (f.lineCut) return [];
+  if (state.risk.maxDrawdown <= FINANCE.covenantDrawdown.value * state.capital) return [];
+  f.lineCut = true;
+  f.lineLimit = f.lineDrawn + lcCommitted(state);
+  const text = `Nordbank: the drawdown of $${Math.round(state.risk.maxDrawdown).toLocaleString()} breaches the covenant (${Math.round(FINANCE.covenantDrawdown.value * 100)}% of capital, stylised). The line is cut to what is drawn and committed: $${Math.round(f.lineLimit).toLocaleString()}. No new draws.`;
+  state.risk.messages.push({ tick: state.tick, text, severity: "breach" });
+  return [{ kind: "finance", tick: state.tick, text, pause: true }];
 }
