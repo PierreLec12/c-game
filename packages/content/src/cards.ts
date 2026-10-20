@@ -2,7 +2,7 @@
  * Concept cards: a titled panel with one diagram where it helps, three sentences, a worked number from the
  * player's own book, and a "show me" target. Tier 0 and tier 1 cards ship in milestone 1.
  */
-import { INSTRUMENTS, ckey, type State, fullCarry, cargoMark, physicalExposureBbl, GRADES, PORTS, windowText, legMark, CHOKEPOINT_SPECS, VESSEL_CLASSES, COUNTERPARTIES, counterpartyExposure, lineAvailable, lcCommitted, tankInventory, parcelDiff, FINANCE, CREDIT } from "@desk/engine";
+import { INSTRUMENTS, ckey, type State, fullCarry, cargoMark, physicalExposureBbl, GRADES, PORTS, windowText, legMark, CHOKEPOINT_SPECS, VESSEL_CLASSES, COUNTERPARTIES, counterpartyExposure, lineAvailable, lcCommitted, tankInventory, parcelDiff, FINANCE, CREDIT, refineryMarginPerBbl, ttfUsdMmbtu, LNG, listedStrikes, optionQuote, monthLabel, optionPositions, netLots, nakedShortOptions, coverLotsByInst, signalsVisible, signalReading } from "@desk/engine";
 
 export type Diagram = "none" | "bidask" | "curve_contango" | "curve_backwardation" | "margin" | "timeline" | "spread" | "crack" | "release" | "incoterms" | "window" | "hedge" | "basis" | "chokepoint" | "freight" | "money" | "concentration" | "var" | "carry";
 
@@ -333,6 +333,83 @@ export const CARDS: Card[] = [
     worked: (s) => `Refinery runs are at ${(s.world.refineryRuns * 100).toFixed(0)}% of capacity now.`,
     showMe: { screen: "markets", target: "spreads", label: "the 3-2-1 row" },
     terms: [{ term: "runs", definition: "How much crude a refinery is processing, as a share of capacity." }],
+  },
+  {
+    id: "yields", title: "Yields", level: 14, diagram: "crack",
+    sentences: ["A barrel of crude comes out of the plant as a fixed mix: gasoline, diesel, jet, fuel oil and a little loss, in shares the slate decides.", "The margin is the yield-weighted product price less the delivered crude and the cost of running it; the 3-2-1 crack on the screen is the tradable shadow of that number.", "A sweeter slate makes more gasoline and less fuel oil; it is worth more only when the sweet premium you pay for it is smaller than the fuel oil you avoid."],
+    worked: (s) => { if (!s.refinery) return "No plant in this level. A 100 kb/d plant at a $6 margin makes $600,000 a day before fixed costs (stylised)."; const m = refineryMarginPerBbl(s, s.refinery.slate); return `${GRADES[s.refinery.slate].name} today: ${Object.entries(m.products).map(([k, p]) => `${Math.round(p.yieldShare * 100)}% ${k} at ${p.price.toFixed(2)}`).join(", ")}; crude ${m.crude.toFixed(2)} + delivery ${m.delivered.toFixed(2)} + opex ${m.opex.toFixed(2)}: margin ${m.perBbl.toFixed(2)} $/bbl against a screen crack of ${m.crack321.toFixed(2)}.`; },
+    showMe: { screen: "desk", target: "refinery", label: "the yields table" },
+    terms: [{ term: "yield", definition: "The share of each product a barrel of a given crude makes." }, { term: "slate", definition: "The crude a refinery chooses to run." }],
+  },
+  {
+    id: "seasonality_of_cracks", title: "Seasonality of cracks", level: 14, diagram: "crack",
+    sentences: ["Gasoline is strongest into the summer driving season and diesel into the heating season; the cracks move months ahead of the demand.", "A plant long the crack earns the seasonal rise; a plant that sold the crack forward to lock a margin gives it back on the hedge and keeps it on the barrels.", "A hurricane is the season's other face: plants shut, product cracks jump, and a hedge on production that will not happen is a naked short crack."],
+    worked: (s) => { const q = (i: "RBOB" | "ULSD" | "WTI") => s.quotes[ckey(i, s.listed[i][0])]; const q2 = (i: "RBOB" | "ULSD" | "WTI") => s.quotes[ckey(i, s.listed[i][Math.min(3, s.listed[i].length - 1)])]; const rb = q("RBOB"), ho = q("ULSD"), cl = q("WTI"); if (!rb || !ho || !cl) return "Not yet: no product quotes in this level."; const c1 = (2 * rb.mid * 42 + ho.mid * 42 - 3 * cl.mid) / 3; const c4 = (2 * q2("RBOB").mid * 42 + q2("ULSD").mid * 42 - 3 * q2("WTI").mid) / 3; return `3-2-1 crack: front ${c1.toFixed(2)}, fourth month ${c4.toFixed(2)} $/bbl; gasoline crack ${s.factors.gasolineCrack.toFixed(2)}, diesel ${s.factors.dieselCrack.toFixed(2)}, fuel oil ${s.factors.fuelOilCrack.toFixed(2)}.`; },
+    showMe: { screen: "markets", target: "spreads", label: "the crack row" },
+    terms: [{ term: "driving season", definition: "The summer months of peak gasoline demand." }, { term: "heating season", definition: "The winter months of peak distillate demand." }],
+  },
+  {
+    id: "mmbtu_mwh_m3", title: "MMBtu, MWh, m3", level: 15, diagram: "none",
+    sentences: ["Henry Hub and JKM price in dollars per million Btu; TTF prices in euros per megawatt-hour; a cargo is measured in cubic metres of liquid, about 20.7 MMBtu each.", "One MWh is 3.412 MMBtu, so TTF in dollars per MMBtu is TTF times EURUSD divided by 3.412; get the direction wrong and the hedge is three and a half times too big or too small.", "A 3.6 TBtu cargo is 360 Henry Hub lots, 360 JKM lots, or about 1,465 TTF lots of 720 MWh: the engine will take any of them and only one is right."],
+    worked: (s) => { const t = s.quotes[ckey("TTF", s.listed.TTF[0])]; const h = s.quotes[ckey("HH", s.listed.HH[0])]; return t && h ? `TTF ${t.mid.toFixed(3)} EUR/MWh at ${s.factors.eurusd.toFixed(4)} = ${ttfUsdMmbtu(t.mid, s.factors.eurusd).toFixed(3)} $/MMBtu; Henry Hub ${h.mid.toFixed(3)} $/MMBtu. A 3,600,000 MMBtu cargo is 360 HH lots or ${Math.round(3600000 / 3.412 / 720)} TTF lots.` : "Not yet: no gas quotes in this level."; },
+    showMe: { screen: "markets", target: "ticket-qty", label: "the lots field on a TTF ticket" },
+    terms: [{ term: "MMBtu", definition: "A million British thermal units, the US gas unit." }, { term: "MWh", definition: "A megawatt-hour, the European gas unit: 3.412 MMBtu." }],
+  },
+  {
+    id: "netback", title: "Netback", level: 15, diagram: "freight",
+    sentences: ["A netback is the delivered price worked backwards to the loading port: the hub price at the terminal less regasification, less shipping, less the buyer's margin.", "The LNG arb is that netback against the FOB cost of Henry Hub plus the tolling fee; it is positive to one terminal and not to another, and it moves with every leg.", "Choose the destination by netback, not by headline price: the Asian premium pays for a longer voyage only when it is bigger than the extra days of hire."],
+    worked: (s) => { const c = s.cargoes.find((x) => x.grade === "LNG"); const h = s.factors.hhPrompt + LNG.liquefactionFee.value; const ttf = ttfUsdMmbtu(s.factors.ttfPrompt, s.factors.eurusd); const jkm = ttf + s.factors.jkmPremium; return `FOB cost about ${h.toFixed(2)} $/MMBtu (HH + ${LNG.liquefactionFee.value.toFixed(2)} fee). Gate: TTF ${ttf.toFixed(2)} less regas ${LNG.regasFee.value.toFixed(2)} and margin ${LNG.buyerMargin.value.toFixed(2)}; Sodegaura: JKM ${jkm.toFixed(2)} less the same. Shipping is hire times days over the cargo's MMBtu${c ? `: ${((c.freight.fixedUsd ?? c.freight.expectedUsd) / c.bbl).toFixed(2)} on ${c.id}` : ""}.`; },
+    showMe: { screen: "desk", target: "cargoes", label: "the netback line on the LNG cargo" },
+    terms: [{ term: "netback", definition: "The delivered price less every cost back to the loading port." }, { term: "regasification", definition: "Turning the liquid back into gas at the terminal, for a fee." }],
+  },
+  {
+    id: "storage_is_the_gas_curve", title: "Storage is the gas curve", level: 15, diagram: "curve_contango",
+    sentences: ["Gas is injected in summer and withdrawn in winter; the curve is the price of moving a molecule from one to the other, bounded by what storage costs.", "A storage surplus against the five-year normal lowers the prompt and flattens the winter premium; a cold snap drains it faster and lifts both.", "The weekly storage number is the release the gas desk trades: the surprise against consensus, not the number itself."],
+    worked: (s) => `US storage ${s.world.gasStorageGap.us >= 0 ? "+" : ""}${s.world.gasStorageGap.us.toFixed(0)} bcf and EU ${s.world.gasStorageGap.eu >= 0 ? "+" : ""}${s.world.gasStorageGap.eu.toFixed(0)} TWh against normal; heating anomaly EU ${s.world.hddAnomaly.eu.toFixed(1)} HDD. Front HH spread ${s.factors.spread1.HH.toFixed(3)} $/MMBtu a month, TTF ${s.factors.spread1.TTF.toFixed(3)} EUR/MWh.`,
+    showMe: { screen: "intel", target: "calendar", label: "the gas storage release" },
+    terms: [{ term: "injection season", definition: "The months gas is put into storage, roughly April to October." }, { term: "withdrawal season", definition: "The months it is drawn, roughly November to March." }],
+  },
+  {
+    id: "black76_one_screen", title: "Black-76 in one screen", level: 16, diagram: "none",
+    sentences: ["An option on a future is worth the expected payoff under a lognormal future with no drift: the inputs are the future, the strike, the time to expiry and one volatility.", "The price is the model at the surface's vol; the market shows it a vol point wide, so you pay the spread in vol, not in cents.", "No premium changes hands here at the fill: the option is margined like a future and its value settles every day as variation margin."],
+    worked: (s) => { const inst = s.level.instruments.includes("BRENT") ? "BRENT" : s.level.instruments[0]; const m = s.listed[inst][1]; const ks = listedStrikes(s, inst, m); const k = ks[Math.floor(ks.length / 2)]; const q = k !== undefined ? optionQuote(s, inst, m, "put", k) : null; return q ? `${INSTRUMENTS[inst].name} ${monthLabel(m)} ${k} put: ${q.bid.toFixed(2)} / ${q.ask.toFixed(2)} at ${(q.iv * 100).toFixed(1)}% vol, delta ${q.greeks?.delta.toFixed(2)}, ${Math.round((q.expiryTick - s.tick) / 24)} days to expiry.` : "Not yet: no option market in this level."; },
+    showMe: { screen: "markets", target: "options", label: "the option chain" },
+    terms: [{ term: "Black-76", definition: "The option pricing model for futures: Black-Scholes with the future as the underlying." }, { term: "implied vol", definition: "The volatility at which the model gives the market's price." }],
+  },
+  {
+    id: "delta_moves", title: "Delta is a hedge ratio that moves", level: 16, diagram: "hedge",
+    sentences: ["Delta is how much the option moves per unit of the future: a hedge of delta lots of futures makes the position flat for a small move.", "Gamma is how fast that delta changes, so the hedge is right only until the market moves; a long option gains on the re-hedge, a short option pays for it.", "A naked short option has no futures or physical behind it; the risk manager counts those lots, not their delta."],
+    worked: (s) => { const rows = optionPositions(s); if (!rows.length) return "No options on the book. A 600-lot cargo hedged with 600 at-the-money puts is about 300 lots of delta: half a hedge that grows as the market falls."; const d = rows.reduce((a, r) => a + r.deltaLots, 0); const f = Object.values(netLots(s)).reduce((a, b) => a + b, 0); return `Option delta ${d.toFixed(0)} lots, futures ${f} lots: net ${(d + f).toFixed(0)}. Naked short lots ${nakedShortOptions(s, coverLotsByInst(s)).total}${s.risk.limits.nakedShortOptions !== undefined ? ` against a limit of ${s.risk.limits.nakedShortOptions}` : ""}.`; },
+    showMe: { screen: "book", target: "greeks", label: "the Greeks table" },
+    terms: [{ term: "delta", definition: "The option's sensitivity to the future, and so its hedge ratio." }, { term: "gamma", definition: "The rate at which delta changes with the future." }, { term: "naked option", definition: "A short option with nothing behind it." }],
+  },
+  {
+    id: "vol_is_a_price", title: "Vol is a price", level: 16, diagram: "var",
+    sentences: ["Implied vol is what the market charges for the right to a move; it rises into a release and after a shock, and falls when nothing happens.", "Vega is the option's P&L per vol point; theta is what you pay each day for holding the right, or earn for having sold it.", "A vol spike makes every long option richer and every short option poorer before the future has moved at all; the delta hedge does nothing about that."],
+    worked: (s) => { const v = s.factors.vol.BRENT; const th = s.pnl.attribution.filter((r) => r.greek === "theta").reduce((a, r) => a + r.amount, 0); const ve = s.pnl.attribution.filter((r) => r.greek === "vega").reduce((a, r) => a + r.amount, 0); return `Brent front vol ${(v * 100).toFixed(1)}% (${s.world.regime} regime). Your theta so far ${usd(th)}, your vega so far ${usd(ve)}.`; },
+    showMe: { screen: "book", target: "waterfall", label: "the options rows by Greek" },
+    terms: [{ term: "vega", definition: "P&L per vol point." }, { term: "theta", definition: "P&L per day of time passing." }],
+  },
+  {
+    id: "lags", title: "Lags", level: 17, diagram: "timeline",
+    sentences: ["The world moves first, the price moves when enough people see it, and the headline arrives when a wire confirms it; each step is a lag you can be on the right side of.", "A signal is anything that moves with the world before the headline: ships at anchor, transits through a strait, heat from a plant, a cold forecast.", "The feed costs money and the lag is worth more than the fee only when you act on it before the headline, with a size you can carry if it was noise."],
+    worked: (s) => { const sig = s.signals; if (!sig.length) return "No signal series in this level."; return `${sig.length} series this level${s.feedBought ? "" : " (feed not bought)"}: ${sig.map((x) => `${x.label} (${x.lagNote})`).join("; ")}. Headlines arrive ${s.infoDelayHours} hours after the world moves.`; },
+    showMe: { screen: "intel", target: "signals", label: "the signals panel" },
+    terms: [{ term: "signal", definition: "A measurable series that moves with the world before the news does." }, { term: "lag", definition: "The time between a thing happening and the market, or the wire, knowing it." }],
+  },
+  {
+    id: "signal_vs_noise", title: "Signal versus noise", level: 17, diagram: "release",
+    sentences: ["Every series has a baseline and a scatter; one reading off the baseline is noise, two in a row are a question, a trend is a signal.", "A false rumour moves the price and resolves as false; a true signal moves the world first and the price catches up: trade the second, fade the first.", "Size for the chance that you are wrong: a signal position is a view, and the stop is the day the headline says the series was noise."],
+    worked: (s) => { const vis = signalsVisible(s); if (!vis.length) return s.signals.length ? "Buy the feed on Intel to see the series." : "No series this level."; return vis.map((x) => { const r = signalReading(x); return `${x.label}: ${r.v === null ? "no reading yet" : `${r.v} ${x.unit} against ${x.baseline}${r.off ? " (off baseline)" : ""}`}`; }).join("; ") + `. Rumours resolved false so far: ${s.news.filter((n) => n.source === "rumour" && n.resolved?.outcome === "false").length}, true: ${s.news.filter((n) => n.source === "rumour" && n.resolved?.outcome === "true").length}.`; },
+    showMe: { screen: "intel", target: "signals", label: "the readings against baseline" },
+    terms: [{ term: "baseline", definition: "What a series reads on an ordinary day." }, { term: "noise", definition: "The scatter around the baseline that means nothing." }],
+  },
+  {
+    id: "transit_count", title: "What a transit count can and cannot tell you", level: 17, diagram: "chokepoint",
+    sentences: ["A count of ships through a strait says whether owners are sailing it; it falls when they are held, when they are frightened, and when the weather is bad.", "It cannot say which, or for how long; the price moves on the count and the headline says why, a day or two later.", "Ships at anchor off a port say oil is waiting for a buyer or a berth; a satellite hotspot says heat, which is a flare until it is a fire."],
+    worked: (s) => { const t = s.signals.find((x) => x.kind === "transits"); const r = t ? signalReading(t) : null; return t && r ? `${t.label}: ${r.v === null ? "no reading yet" : `${r.v} a day against a baseline of ${t.baseline}`}. ${t.what}` : "No transit series this level."; },
+    showMe: { screen: "map", target: "map", label: "the Hormuz marker" },
+    terms: [{ term: "transit count", definition: "Ships passing a chokepoint in a day." }, { term: "hotspot", definition: "A satellite's thermal detection over a site." }],
   },
 ];
 

@@ -195,7 +195,7 @@ export interface RiskState {
   varBreachedAtClose: boolean;
   stopLossRef: number; // level P&L at the last life lost; the stop-loss measures from here
   forcedReductions: number;
-  closes: { tick: number; physBbl: number; net: Record<InstrumentId, number>; var95: number; pnl: number; cashUsd: number }[]; // one row per settle: what the book looked like at the close
+  closes: { tick: number; physBbl: number; net: Record<InstrumentId, number>; var95: number; pnl: number; cashUsd: number; byBasis: Partial<Record<Basis, number>>; optionDeltaLots: Partial<Record<InstrumentId, number>>; nakedShort: number }[]; // one row per settle: what the book looked like at the close
 }
 
 export interface NewsItem {
@@ -424,7 +424,7 @@ export interface Refinery {
   maintenanceUntil: number | null; // a turnaround: runs capped at 0.5
   marginUsd: number; // realised since the level began
   daysRun: number;
-  history: { day: number; runs: number; crudeBbl: number; marginUsd: number; marginPerBbl: number; crack321: number }[];
+  history: { day: number; runs: number; crudeBbl: number; marginUsd: number; marginPerBbl: number; crack321: number; slate: Grade; bestSlate: Grade; bestMarginPerBbl: number }[];
   base: number; // the forward margin marked at the last settle (always 0: the plant's margin is realised daily)
   pendingSlate: Grade | null; // a slate change takes effect at the next day's run
 }

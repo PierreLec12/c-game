@@ -60,7 +60,9 @@ export function listedStrikes(state: State, inst: InstrumentId, month: string): 
     const s = Math.round((centre + k * step) / step) * step;
     if (s > 0) out.push(Number(s.toFixed(6)));
   }
-  return out;
+  // a strike the player holds stays listed so the position can always be closed
+  for (const l of state.lots) if (l.option && l.inst === inst && l.month === month && !out.some((s) => Math.abs(s - l.option!.strike) < 1e-9)) out.push(l.option.strike);
+  return out.sort((a, b) => a - b);
 }
 export function isListedStrike(state: State, inst: InstrumentId, month: string, strike: number): boolean {
   return listedStrikes(state, inst, month).some((s) => Math.abs(s - strike) < 1e-9);

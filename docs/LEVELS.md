@@ -125,6 +125,54 @@ sells and hedges in 120-lot chunks and stays inside the limits through the scare
 the deferred month against the net exposure, sells into the prompt bid after the flip, lets the hedge unwind as the sale prices,
 and gives the tank back.
 
+## Tier 4: products, gas, options, signals (milestone 4)
+
+| Level | Title | Days | Instruments | Pass rule | Cards |
+|---|---|---|---|---|---|
+| 14 | The refinery | 45 | WTI, RBOB, ULSD, Brent | margin within 5% of par, crack hedge within 25% of the next 30 days of runs at 80% of closes, the better slate 70% of days, VaR inside at every close | Yields; Seasonality of cracks; A turnaround is a supply event |
+| 15 | Gas and LNG | 50 | HH, TTF, JKM | an LNG cargo delivered and sold, purchase hedged on Henry Hub and sale hedged on its hub in its own units at 75% of closes, profitable, VaR inside | MMBtu, MWh, m3; Netback; Storage is the gas curve |
+| 16 | Options | 45 | Brent, WTI | puts and a collar on the cargo, the programme delta-hedged within 60 lots at 75% of closes, never more than 200 naked short lots at a close, delta, vega and theta on the waterfall | Black-76 in one screen; Delta is a hedge ratio that moves; Vol is a price |
+| 17 | Signals | 45 | Brent, WTI, Dubai, ULSD, TTF | the feed bought, two signals traded before their headlines, flat of signal positions at the end, profitable, VaR inside | Lags; Signal versus noise; What a transit count can and cannot tell you |
+
+Tier 4 knobs: normal regime, capital $50m and a $400m line, headlines 24 hours behind the market (36 on level 17), rumours,
+back months at half depth, three lives.
+
+### Scenarios and traps
+
+* **Level 14**: a 100 kb/d plant on WTI Midland into driving season; an OSP cut on day 0 makes Arab Light the cheaper slate for
+  about a week (and again on day 20); a five-day turnaround on day 7 halves the plant; a Gulf Coast maintenance season firms the
+  cracks on day 12; a hurricane shuts the plant for five days on day 24 while cracks jump; a rumour on day 33 about the OSP.
+* **Level 15**: a full cargo FOB Sabine Pass at Henry Hub plus the fee; Northgas bids DES Gate on TTF and Sakura Power DES
+  Sodegaura on JKM on day 2; LNG hire jumps on day 4 (after the bot has fixed); a late cold snap on day 15; a Freeport rumour on
+  day 26; Norwegian flows surge on day 35 while the sale is pricing; a weekly storage release every Thursday.
+* **Level 16**: a Forties cargo bought on day 0 and sold on day 1, long 600,000 barrels once the purchase prices; Delta
+  Independent buys 300 Brent puts from the desk on day 24; a missile strike doubles implied vol on day 31.
+* **Level 17**: a tanker cluster off Fujairah before unsold Gulf crude softens the prompt (day 8), Hormuz transits falling before
+  an escort regime (day 14), a hotspot over Jamnagar two ticks before a fire (day 22), the cold forecast before an early cold
+  snap (day 30); three rumours (an OPEC+ emergency cut, convoys suspended, Jamnagar back early), each half likely.
+
+### Pars and pass rates
+
+| Level | Par on seed 1 | Bot pass rate over 12 random seeds | Checked-in seeds |
+|---|---|---|---|
+| 14 | $14,605,403 (the plant's margin less what the crack hedge gave back as cracks rose into the season) | 100% | 1 to 10 |
+| 15 | $4,310,936 (the Sodegaura netback less freight, regas, boil-off and hedging friction) | 83% (the arb is negative on some seeds; the right play there is to decline the cargo) | 1 to 7, 9, 11, 12 |
+| 16 | -$1,920,210 (the collar's spread, slippage and theta; the programme's vega and gamma through the spike, less theta) | 100% | 1 to 10 |
+| 17 | $159,557 (two signal trades, less the feed) | 92% (a true rumour moved the market against a signal position) | 1 to 6, 8 to 11 |
+
+### Solution bots
+
+Level 14 picks the slate with the higher margin per barrel once a day before the run, and keeps the next thirty days of runs
+sold forward in 3-2-1 packages of up to 40 units a tick, buying units back as the plant's expected runs fall (turnaround,
+hurricane) and as each day's barrels are made. Level 15 accepts the FOB offer, fixes the cheapest LNG carrier, nets back both
+bids to the jetty (hire times days plus boil-off over the cargo's MMBtu) and sells to the better one, books a regas slot, hedges
+the purchase on Henry Hub and the sale on its hub in its own units, and before the sale hedges the unsold cargo on the hub it
+means to sell into. Level 16 buys puts a strike under the forward in 40-lot chunks as the cargo goes long, sells calls two
+strikes over against them, trims both as the sale prices, and after the programme sells futures to the larger of the puts'
+delta and the lots the naked rule needs. Level 17 buys the feed, enters a signal's contract in its direction when two
+consecutive readings are off the baseline (one for the hotspot feed), tags the order "signal", and closes each lot three days
+after the headline.
+
 ## Not yet
 
-Levels 14 to 20 are planned titles in the Academy and arrive with milestones 4 and 5.
+Levels 18 to 20 are planned titles in the Academy and arrive with milestone 5.

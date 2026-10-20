@@ -16,6 +16,9 @@ import { moveRating, sellerDefault } from "./counterparties";
 import { CHOKEPOINT_SPECS, COUNTERPARTIES, GRADES, PORTS, type Grade } from "./world_data";
 import { resolveNews as resolve } from "./information";
 import type { WindowSpec } from "./types";
+import { listedStrikes, makeOptionOrder } from "./optionbook";
+import { fillOption } from "./actions";
+import { monthLabel } from "./calendar";
 
 export interface EventDef {
   kind: string;
@@ -415,6 +418,34 @@ export const EVENT_LIBRARY: Record<string, EventDef> = {
       state.world = applyWorldShock(state.world, {}, { refineryRuns: state.world.targets.refineryRuns + num(ev.params.runs, 0.03) });
       const n = publishNews(state, { source: "wire", headline: "Jamnagar crude unit restarts", body: "Diesel exports resume; the crack premium fades.", eventId: ev.id });
       return [{ kind: "news", tick: state.tick, text: n.headline, pause: false }];
+    },
+  },
+  gas_shock: {
+    kind: "gas_shock", title: "Gas market shock",
+    fire(state, ev) {
+      state.factors = { ...state.factors, hhPrompt: state.factors.hhPrompt * Math.exp(num(ev.params.hhPct, 0)), ttfPrompt: state.factors.ttfPrompt * Math.exp(num(ev.params.ttfPct, 0)) };
+      state.world = applyWorldShock(state.world, { gasUs: num(ev.params.usGas, 0), gasEu: num(ev.params.euGas, 0), eventIntensity: num(ev.params.intensity, 0.2) }, { usGasGap: state.world.targets.usGasGap + num(ev.params.usGasTarget, 0), euGasGap: state.world.targets.euGasGap + num(ev.params.euGasTarget, 0) });
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, "Gas market moves"), body: str(ev.params.body, "Henry Hub and TTF reprice."), eventId: ev.id });
+      return [{ kind: "event", tick: state.tick, text: n.headline, pause: num(ev.params.pause, 1) === 1 }];
+    },
+  },
+  option_programme: {
+    kind: "option_programme", title: "A producer's hedging programme", card: "delta_moves",
+    fire(state, ev) {
+      const cp = str(ev.params.counterparty, "DELTA_INDEPENDENT");
+      const inst = str(ev.params.inst, "BRENT") as "BRENT" | "WTI";
+      const idx = Math.min(num(ev.params.monthIdx, 2), state.listed[inst].length - 1);
+      const month = state.listed[inst][idx];
+      const qty = num(ev.params.qty, 300);
+      const F = state.quotes[`${inst}:${month}`]?.mid ?? 0;
+      const grid = listedStrikes(state, inst, month);
+      const want = F + num(ev.params.strikeOffset, -3);
+      const strike = grid.reduce((a, k) => (Math.abs(k - want) < Math.abs(a - want) ? k : a), grid[0]);
+      // the client buys puts from the desk: the desk sells at its bid, and is short from here
+      const events: EngineEvent[] = fillOption(state, makeOptionOrder(state, cp, inst, month, "sell", qty, "put", strike, "outright"));
+      const n = publishNews(state, { source: "wire", headline: str(ev.params.headline, `${COUNTERPARTIES[cp].name} executes its quarterly hedging programme with the desk: ${qty} ${inst} ${strike} puts`), body: str(ev.params.body, `The producer bought ${qty} lots of ${monthLabel(month)} ${strike} puts from you at the bid. You are short the puts: short vega, short gamma, long theta, and long ${inst} by the delta. Delta hedge it by selling futures; the risk manager counts the naked lots.`), eventId: ev.id });
+      events.push({ kind: "option", tick: state.tick, text: n.headline, pause: true, data: { inst, month, strike, qty } });
+      return events;
     },
   },
   gas_storage_release: {

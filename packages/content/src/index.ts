@@ -13,8 +13,12 @@ import { level10 } from "./levels/level_10";
 import { level11 } from "./levels/level_11";
 import { level12 } from "./levels/level_12";
 import { level13 } from "./levels/level_13";
+import { level14 } from "./levels/level_14";
+import { level15 } from "./levels/level_15";
+import { level16 } from "./levels/level_16";
+import { level17 } from "./levels/level_17";
 
-export const LEVELS: LevelSpec[] = [level00, level01, level02, level03, level04, level05, level06, level07, level08, level09, level10, level11, level12, level13];
+export const LEVELS: LevelSpec[] = [level00, level01, level02, level03, level04, level05, level06, level07, level08, level09, level10, level11, level12, level13, level14, level15, level16, level17];
 for (const l of LEVELS) registerLevel(l);
 
 export const TIERS = [
@@ -36,7 +40,7 @@ export * from "./glossary";
 export * from "./drills";
 export * from "./mentor";
 export * from "./bot";
-export { level00, level01, level02, level03, level04, level05, level06, level07, level08, level09, level10, level11, level12, level13 };
+export { level00, level01, level02, level03, level04, level05, level06, level07, level08, level09, level10, level11, level12, level13, level14, level15, level16, level17 };
 export const ABOUT = `DESK is a single-player commodity trading game: a trader's desk on an accelerated clock, with a curriculum that teaches the job one concept at a time by making you do it and lose money safely when you get it wrong.
 
 What it cannot teach, and says so: relationships, negotiation with a real person, the politics of a trading floor, and real market microstructure. The engine is a model. A player who beats it has learned the mechanics, the discipline and the vocabulary.

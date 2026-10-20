@@ -71,7 +71,8 @@ export function runRefineryDay(state: State): { rows: AttributionRow[]; events: 
   ledger(state, "other", margin, `Refinery day ${day}: ${Math.round(crudeBbl).toLocaleString()} bbl of ${GRADES[r.slate].name} at ${m.perBbl.toFixed(2)} $/bbl less ${usd(fixed)} of fixed cost`);
   r.marginUsd += margin;
   r.daysRun += 1;
-  r.history.push({ day, runs, crudeBbl, marginUsd: margin, marginPerBbl: m.perBbl, crack321: m.crack321 });
+  const best = SLATES.map((g) => ({ g, m: refineryMarginPerBbl(state, g).perBbl })).sort((a, b) => b.m - a.m)[0];
+  r.history.push({ day, runs, crudeBbl, marginUsd: margin, marginPerBbl: m.perBbl, crack321: m.crack321, slate: r.slate, bestSlate: best.g, bestMarginPerBbl: best.m });
   const status = r.shutUntil !== null && r.shutUntil > state.tick ? "shut" : r.maintenanceUntil !== null && r.maintenanceUntil > state.tick ? "in turnaround" : "running";
   rows.push({ tick: state.tick, inst: "WTI", month: "plant", leg: "refinery", amount: margin, text: `The plant ${status}: ${Math.round(crudeBbl / 1000).toLocaleString()} kb of ${GRADES[r.slate].name} run at ${m.perBbl.toFixed(2)} $/bbl of margin (3-2-1 crack ${m.crack321.toFixed(2)}), less ${usd(fixed)} of fixed cost: ${usd(margin)} for the day.` });
   return { rows, events };

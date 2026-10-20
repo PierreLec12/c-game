@@ -2,7 +2,7 @@
  * Limits, VaR and stress on the book, and what the risk manager does about a breach (section 7).
  * historicalVar is a port of c-terminal's book.historical_var (same semantics, tested on the same hand case).
  */
-import { INSTRUMENTS, STRESS_SHOCKS, VAR, type InstrumentId } from "./refdata";
+import { CONVERSIONS, INSTRUMENTS, STRESS_SHOCKS, VAR, type InstrumentId } from "./refdata";
 import { priceParts } from "./markets";
 import { ckey } from "./liquidity";
 import { lotValueUsd } from "./finance";
@@ -90,7 +90,9 @@ export function bookVar(state: State): Fig | null {
     const inst: InstrumentId = basis === "HH" ? "HH" : basis === "TTF" ? "TTF" : basis === "JKM" ? "JKM" : "BRENT";
     const k = ckey(inst, state.listed[inst][0]);
     const lotUsd = lotValueUsd(state, inst) / INSTRUMENTS[inst].lot;
-    exposure[k] = (exposure[k] ?? 0) + units * lotUsd;
+    // TTF is priced per MWh: the MMBtu of a TTF-priced leg are 3.412 MMBtu to the MWh
+    const contractUnits = basis === "TTF" ? units / CONVERSIONS.MMBTU_PER_MWH.value : units;
+    exposure[k] = (exposure[k] ?? 0) + contractUnits * lotUsd;
     prices[k] = state.quotes[k]?.mid ?? (inst === "BRENT" ? state.factors.brentPrompt : inst === "HH" ? state.factors.hhPrompt : state.factors.ttfPrompt);
   }
   const closes = contractCloses(state, Object.keys(exposure));
@@ -160,7 +162,7 @@ export function coverLotsByInst(state: State): Record<InstrumentId, number> {
   const phys = physicalExposureBbl(state);
   for (const [basis, units] of Object.entries(phys.byBasis)) {
     const inst: InstrumentId = basis === "HH" ? "HH" : basis === "TTF" ? "TTF" : basis === "JKM" ? "JKM" : basis === "WTI" ? "WTI" : basis === "DUBAI" ? "DUBAI" : "BRENT";
-    net[inst] += units / INSTRUMENTS[inst].lot;
+    net[inst] += (basis === "TTF" ? units / CONVERSIONS.MMBTU_PER_MWH.value : units) / INSTRUMENTS[inst].lot;
   }
   return net;
 }

@@ -26,11 +26,12 @@ import { stepPipelineCargoes } from "./physical";
 import { checkCovenant } from "./finance";
 import { worstStress } from "./risk";
 import { CHOKEPOINTS } from "./refdata";
-import { COUNTERPARTIES } from "./world_data";
+import { COUNTERPARTIES, type Basis } from "./world_data";
 import { clone } from "./clone";
 import { initRefinery, runRefineryDay } from "./refinery";
 import { initSignals, stepSignals } from "./signals";
-import { lotKey, makeOptionOrder } from "./optionbook";
+import { lotKey, makeOptionOrder, optionDeltaLots, nakedShortOptions } from "./optionbook";
+import { coverLotsByInst } from "./risk";
 import { fillOption } from "./actions";
 import type { Action, Contract, EngineEvent, Factors, Fill, LogEntry, Refusal, State, TickResult, WorldState } from "./types";
 
@@ -333,7 +334,8 @@ function usd(x: number): string { return (x < 0 ? "-$" : "$") + Math.abs(Math.ro
 
 function settle(state: State, spec: LevelSpec): EngineEvent[] {
   const events: EngineEvent[] = [];
-  const physBeforePrints = physicalExposureBbl(state).bbl;
+  const physBefore = physicalExposureBbl(state);
+  const physBeforePrints = physBefore.bbl;
   const settlePrices: Record<string, number> = {};
   for (const [key, q] of Object.entries(state.quotes)) {
     const c = state.contracts[key];
@@ -394,20 +396,20 @@ function settle(state: State, spec: LevelSpec): EngineEvent[] {
     events.push({ kind: "margin_call", tick: state.tick, text, pause: true, data: { amount: mc.amount } });
   } else if (mc.met) events.push({ kind: "margin_met", tick: state.tick, text: "Margin call met." });
   state.pnl.settles.push({ tick: state.tick, pnl: equity(state, cargoesMarkUsd(state) + tanksMarkUsd(state)) - state.capital });
-  events.push(...riskAtClose(state, spec, physBeforePrints));
+  events.push(...riskAtClose(state, spec, physBeforePrints, physBefore.byBasis));
   events.push(...checkCovenant(state));
   events.push({ kind: "session_close", tick: state.tick, text: `Session close ${formatClock(state.startDay, state.tick)}: P&L today ${usd(state.pnl.today)}, level ${usd(equity(state, 0) - state.capital)}`, pause: true });
   return events;
 }
 
-function riskAtClose(state: State, spec: LevelSpec, physBeforePrints?: number): EngineEvent[] {
+function riskAtClose(state: State, spec: LevelSpec, physBeforePrints?: number, byBasisBefore?: Partial<Record<Basis, number>>): EngineEvent[] {
   const events: EngineEvent[] = [];
   state.risk.var95 = bookVar(state);
   state.risk.stress = stressTable(state);
   recordCurve(state);
   state.risk.closesTotal += 1;
   // the physical exposure a trader could have hedged by this close: the day's prints land at the settle itself
-  state.risk.closes.push({ tick: state.tick, physBbl: physBeforePrints ?? physicalExposureBbl(state).bbl, net: netLots(state), var95: state.risk.var95?.v ?? 0, pnl: state.pnl.total, cashUsd: state.finance.cashUSD });
+  state.risk.closes.push({ tick: state.tick, physBbl: physBeforePrints ?? physicalExposureBbl(state).bbl, net: netLots(state), var95: state.risk.var95?.v ?? 0, pnl: state.pnl.total, cashUsd: state.finance.cashUSD, byBasis: byBasisBefore ?? physicalExposureBbl(state).byBasis, optionDeltaLots: optionDeltaLots(state), nakedShort: nakedShortOptions(state, coverLotsByInst(state)).total });
   const v = state.risk.var95;
   if (!v || v.v <= state.risk.limits.var95) state.risk.closesInsideLimit += 1;
   else state.risk.varBreachedAtClose = true;

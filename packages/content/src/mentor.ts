@@ -47,3 +47,29 @@ export function askMentorTier1(state: State, topic: string): string {
   if (t.includes("leak") || t.includes("rumour")) return "Leaks are right about two times in three. The price already paid for most of that. Trade the base rate, not the story.";
   return "Ask about size, margin, the spread, your P&L, a release or a leak. Or open a card.";
 }
+
+/** Tier-4 verbosity: consequences only; the firsts are assumed known. */
+export function tier4Mentor(state: State, events: EngineEvent[]): string[] {
+  const out: string[] = [];
+  for (const e of events) {
+    switch (e.kind) {
+      case "margin_call": out.push("Margin call. Fund it or cut it by the close."); break;
+      case "liquidation": out.push("Liquidated at the touch."); break;
+      case "forced_reduction": out.push("He cut you. It was cheaper yesterday."); break;
+      case "life_lost": out.push("A life."); break;
+      case "expiry": out.push(e.text.includes("intrinsic") ? "An option expired on you. The hedge has a date; so does the thing it hedges." : "That contract expired with you in it."); break;
+      case "level_ended": out.push("Done. The debrief is where the score is."); break;
+    }
+  }
+  void state;
+  return out;
+}
+export function askMentorTier4(state: State, topic: string): string {
+  const t = topic.toLowerCase();
+  if (t.includes("delta") || t.includes("greek")) return "Delta is the hedge ratio now; gamma is how wrong it will be after the next move. Read the Greeks table on the Book, then sell or buy the futures that make net delta what you want.";
+  if (t.includes("vol") || t.includes("vega") || t.includes("theta")) return `Brent vol is ${(state.factors.vol.BRENT * 100).toFixed(0)}%. Long options pay theta every day for the right to be long vega. Decide which you are being paid for.`;
+  if (t.includes("crack") || t.includes("refinery") || t.includes("slate")) return "The plant is long the crack. Sell it forward in 3-2-1 packages for the days it will run, no more. The slate is a daily choice: the cheaper crude at today's differentials.";
+  if (t.includes("netback") || t.includes("lng") || t.includes("mmbtu") || t.includes("mwh")) return "Work the delivered price back to the plant: hub less regas less shipping less the buyer's margin. Hedge the leg in the contract it prices on, in its own units: 3.412 MMBtu to the MWh.";
+  if (t.includes("signal") || t.includes("rumour") || t.includes("feed")) return "A signal moves before the headline; a rumour moves the price and then resolves. Trade the series when it leaves its baseline twice, size it as a view, and be out when the headline says it was noise.";
+  return askMentorTier1(state, topic);
+}

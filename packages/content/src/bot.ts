@@ -1,6 +1,6 @@
 /** Shared helpers for the solution bots and the level checks. */
 import { ckey, hourOfTick, type Action, type AttributionLeg, type InstrumentId, type State } from "@desk/engine";
-import { charterQuotes, physicalExposureBbl, physicalExposureAfterPrintsBbl, legMark, type Cargo } from "@desk/engine";
+import { charterQuotes, physicalExposureBbl, physicalExposureAfterPrintsBbl, legMark, type Cargo, type Basis, INSTRUMENTS, CONVERSIONS } from "@desk/engine";
 
 export const P = "p1";
 export const front = (s: State, inst: InstrumentId = "BRENT"): string => s.listed[inst][0];
@@ -8,8 +8,9 @@ export const second = (s: State, inst: InstrumentId = "BRENT"): string => s.list
 export const levelDay = (s: State): number => Math.floor(s.tick / 24);
 export const hour = (s: State): number => hourOfTick(s.tick);
 export const at = (s: State, day: number, h: number): boolean => s.tick === day * 24 + h;
-export const net = (s: State, inst: InstrumentId, month?: string): number => s.lots.filter((l) => l.inst === inst && (month === undefined || l.month === month)).reduce((a, l) => a + l.qty, 0);
-export const gross = (s: State): number => s.lots.reduce((a, l) => a + Math.abs(l.qty), 0);
+/** Net futures lots (options are counted by their delta elsewhere). */
+export const net = (s: State, inst: InstrumentId, month?: string): number => s.lots.filter((l) => !l.option && l.inst === inst && (month === undefined || l.month === month)).reduce((a, l) => a + l.qty, 0);
+export const gross = (s: State): number => s.lots.filter((l) => !l.option).reduce((a, l) => a + Math.abs(l.qty), 0);
 export const mid = (s: State, inst: InstrumentId, month: string): number => s.quotes[ckey(inst, month)]?.mid ?? 0;
 export const isOpen = (s: State): boolean => s.quotes[ckey("BRENT", front(s))]?.open ?? false;
 
@@ -21,6 +22,7 @@ export function flatten(s: State): Action[] {
   const seen = new Set<string>();
   const out: Action[] = [];
   for (const l of s.lots) {
+    if (l.option) continue;
     const k = ckey(l.inst, l.month);
     if (seen.has(k)) continue;
     seen.add(k);
@@ -55,7 +57,7 @@ export const positivePnl = (s: State): "pending" | "done" | "failed" => (s.level
 export const grossUnderLimitEveryClose = (s: State): "pending" | "done" | "failed" => (s.risk.breaches.some((b) => b.limit === "grossLots") ? "failed" : s.risk.closesTotal > 0 ? "done" : "pending");
 
 export const TIER1_UNLOCKS: Action["type"][] = ["order", "close", "cancel_order", "draw_line", "repay_line", "post_margin", "open_card", "ask_mentor", "answer_drill", "answer_quiz", "end_level", "request_limit"];
-export const TIER1_LIMITS_NONE = { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0 };
+export const TIER1_LIMITS_NONE = { BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0, JKM: 0 };
 
 // ---------------------------------------------------------------- physical helpers for the tier 2 bots and checks
 
@@ -73,7 +75,7 @@ export const hedgeOrder = (inst: InstrumentId, month: string, side: "buy" | "sel
 /** Futures lots to sell (negative: buy) so that paper offsets the net physical barrels, given what is already held. */
 export function hedgeAdjustment(s: State, inst: InstrumentId = "BRENT"): number {
   const phys = physicalExposureBbl(s).bbl;
-  const held = s.lots.filter((l) => l.inst === inst).reduce((a, l) => a + l.qty, 0) * 1000;
+  const held = net(s, inst) * 1000;
   const wanted = -phys;
   return Math.round((wanted - held) / 1000); // lots to buy (positive) or sell (negative)
 }
@@ -82,7 +84,7 @@ export function hedgeAdjustment(s: State, inst: InstrumentId = "BRENT"): number 
 export function hedgeRatio(s: State, inst: InstrumentId = "BRENT"): number | null {
   const phys = physicalExposureBbl(s).bbl;
   if (Math.abs(phys) < 50000) return null;
-  const held = s.lots.filter((l) => l.inst === inst).reduce((a, l) => a + l.qty, 0) * 1000;
+  const held = net(s, inst) * 1000;
   return -held / phys;
 }
 
@@ -94,7 +96,7 @@ export const unpricedShare = (s: State, c: Cargo, which: "purchase" | "sale"): n
 };
 
 export const TIER2_UNLOCKS: Action["type"][] = [...TIER1_UNLOCKS, "spread", "roll", "accept_tender", "decline_tender", "fix_charter", "instruct_ship", "efp", "settle_claim", "contest_claim"];
-export const TIER2_LIMITS = (brent: number) => ({ BRENT: brent, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: brent });
+export const TIER2_LIMITS = (brent: number) => ({ BRENT: brent, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: brent, JKM: 0 });
 
 /** Closes with real physical exposure, and how many had futures within `tol` of a one-to-one hedge in `inst`. */
 export function hedgeRecord(s: State, inst: InstrumentId = "BRENT", tol = 0.1, minBbl = 100000): { inside: number; total: number } {
@@ -121,7 +123,7 @@ export function hedgeChunk(inst: InstrumentId, month: string, lots: number): Act
 /** Lots to buy (positive) or sell so paper offsets the physical barrels as they will stand at today's close. */
 export function hedgeAdjustmentAhead(s: State, inst: InstrumentId = "BRENT"): number {
   const phys = physicalExposureAfterPrints(s);
-  const held = s.lots.filter((l) => l.inst === inst).reduce((a, l) => a + l.qty, 0) * 1000;
+  const held = net(s, inst) * 1000;
   return Math.round((-phys - held) / 1000);
 }
 /** Days to hold at anchor so notice of readiness comes after a port's queue clears (0 when there is no queue ahead of the ETA). */
@@ -134,7 +136,41 @@ export function anchorDaysForQueue(s: State, c: Cargo): number {
 }
 
 export const TIER3_UNLOCKS: Action["type"][] = [...TIER2_UNLOCKS, "open_lc", "insure", "counter_tender", "lease_tank", "store_cargo", "blend", "release_tank"];
-export const TIER3_LIMITS = (brent: number, wti = 0, dubai = brent) => ({ BRENT: brent, WTI: wti, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: dubai });
+export const TIER3_LIMITS = (brent: number, wti = 0, dubai = brent) => ({ BRENT: brent, WTI: wti, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: dubai, JKM: 0 });
 export const cashNeverNegative = (s: State): "pending" | "done" | "failed" => (s.risk.closes.some((c) => c.cashUsd < -1) || s.finance.marginCalls > 0 ? "failed" : s.risk.closes.length > 0 ? "done" : "pending");
 export const insideLimitsEveryClose = (s: State): "pending" | "done" | "failed" => (s.risk.closesTotal === 0 ? "pending" : s.risk.varBreachedAtClose || s.risk.forcedReductions > 0 || s.risk.messages.some((m) => m.severity === "warning" || m.severity === "breach") ? "failed" : "done");
 export const cargoFrom = (s: State, cp: string): Cargo | undefined => s.cargoes.find((c) => c.purchase.counterparty === cp);
+
+// ---------------------------------------------------------------- tier 4: products, gas, options, signals
+export const TIER4_UNLOCKS: Action["type"][] = [...TIER3_UNLOCKS, "option_order", "option_strategy", "set_runs", "set_slate", "book_regas", "buy_feed"];
+export const TIER4_LIMITS = (over: Partial<Record<InstrumentId, number>>) => ({ BRENT: 0, WTI: 0, RBOB: 0, ULSD: 0, HH: 0, TTF: 0, DUBAI: 0, JKM: 0, ...over });
+/** Units of a gas basis per lot of the contract that hedges it: HH and JKM lots are 10,000 MMBtu; a TTF lot is 720 MWh, or 720 x 3.412 MMBtu. */
+export const unitsPerLot = (basis: Basis): number => (basis === "TTF" ? INSTRUMENTS.TTF.lot * CONVERSIONS.MMBTU_PER_MWH.value : basis === "HH" || basis === "JKM" ? INSTRUMENTS.HH.lot : 1000);
+export const instOfBasis = (basis: Basis): InstrumentId => (basis === "HH" ? "HH" : basis === "TTF" ? "TTF" : basis === "JKM" ? "JKM" : basis === "WTI" ? "WTI" : basis === "DUBAI" ? "DUBAI" : "BRENT");
+/** Lots to buy (positive) or sell in the contract of `basis` so paper offsets the physical units priced on it. */
+export function gasHedgeAdjustment(s: State, basis: Basis, units = physicalExposureBbl(s).byBasis[basis] ?? 0): number {
+  const inst = instOfBasis(basis);
+  const held = s.lots.filter((l) => l.inst === inst && !l.option).reduce((a, l) => a + l.qty, 0);
+  return Math.round(-units / unitsPerLot(basis)) - held;
+}
+export const GAS_CHUNK: Record<string, number> = { HH: 100, TTF: 100, JKM: 50 };
+/** The month a gas hedge trades in: the month already held in that contract, else the listed month `idx` out. */
+export const gasHedgeMonth = (s: State, basis: Basis, idx = 2): string => { const inst = instOfBasis(basis); return s.lots.find((l) => l.inst === inst && !l.option)?.month ?? s.listed[inst][Math.min(idx, s.listed[inst].length - 1)]; };
+export function gasHedgeChunk(basis: Basis, month: string, lots: number): Action | null {
+  if (Math.abs(lots) < 3) return null;
+  const inst = instOfBasis(basis);
+  return hedgeOrder(inst, month, lots > 0 ? "buy" : "sell", Math.min(Math.abs(lots), GAS_CHUNK[inst] ?? 100));
+}
+/** Closes with physical units on a gas basis, and how many had the right contract within `tol` of a one-to-one hedge. */
+export function gasHedgeRecord(s: State, basis: Basis, tol = 0.25, minUnits = 500000): { inside: number; total: number } {
+  let inside = 0, total = 0;
+  const inst = instOfBasis(basis);
+  for (const c of s.risk.closes) {
+    const units = c.byBasis?.[basis] ?? 0;
+    if (Math.abs(units) < minUnits) continue;
+    total += 1;
+    const ratio = -(c.net[inst] * unitsPerLot(basis)) / units;
+    if (Math.abs(ratio - 1) <= tol) inside += 1;
+  }
+  return { inside, total };
+}

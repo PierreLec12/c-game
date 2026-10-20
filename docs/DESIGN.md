@@ -378,3 +378,137 @@ moves between the purchase and sale windows and futures cannot hedge it; ten pas
 8's lesson; level 13's "carry closed before the flip" is read as "unwound once the curve flips", which is when a carry must be
 unwound; level 10's "finance leg inside par" is a stated band ($2.5m) because the bot's leg on the player's seed is not available
 to a live objective. Tier 3 capital and line are the prompt's $50m and $400m.
+
+# Milestone 4: products, gas, options, signals (as built, 2026-10-20)
+
+Milestone 4 adds options on the book, the refinery, the gas and LNG chain, the JKM swap, signals that run ahead of the news,
+thin back months, and levels 14 to 17. The engine stays pure; nothing was imported from c-terminal (the Black-76 port from
+milestone 1 is the maths; `optionbook.ts` is the book around it).
+
+## Options on the book (`optionbook.ts`)
+
+* **Listing.** Every listed futures month carries a strike grid: 20 strikes either side of the forward at the instrument's step
+  ($1 for crude, 5 cents for products, 10 cents for Henry Hub, 1 EUR for TTF, 25 cents for JKM, stylised), re-centred on the
+  forward as it moves, and any strike the player holds stays listed so a position can always be closed. An option expires three
+  business days before its future (stylised; ICE Brent options expire a few days before), at that day's settle.
+* **Price.** Black-76 on the month's futures mid at the surface vol for the option's tenor and moneyness (the milestone 1 surface:
+  a mild downward term structure and a put skew of 0.8 vol points per 1% below the forward; the port had the skew scaled by a
+  hundred and never used it, now fixed). The market shows an option one vol point wide: the bid is the model at the surface vol
+  less half a point, the ask at plus half a point. Depth is 40 lots at the touch, decaying by month like the futures; slippage is
+  the futures rule applied to the vol spread; no market impact is modelled on options (stylised).
+* **Futures-style margining.** No premium changes hands at the fill; the option's value settles daily as variation margin like a
+  future (ICE Brent style, stylised; recorded as a decision). Initial margin is the instrument's share of the delta-equivalent
+  notional, with a floor of a quarter delta on short options.
+* **Attribution by Greek.** At every settle and every close of a lot, the move from the lot's base inputs (F, sigma, T at the last
+  mark) is split into delta, gamma, vega and theta from the base Greeks, a model residual ("other": higher-order terms, the skew
+  and term structure of the surface, settlement at intrinsic), and the vol spread crossed against the model mid (fees and
+  slippage). Rows carry `greek`; the waterfall sums them into the options leg and the Book breaks them out. The invariant that
+  legs sum to the book to the cent holds with options on the book (tested).
+* **Expiry.** On its expiry settle an option is marked at intrinsic value, the variation margin flows, and the lot leaves the
+  book with an expiry event. Exercise into futures is not modelled (deviation: cash settlement at intrinsic, stylised).
+* **Risk.** Options enter the historical VaR as their delta-equivalent lots of the future; the stress table re-prices every option
+  under each price and vol shock (full re-pricing, as the prompt asks). A new limit, `nakedShortOptions`, counts short option lots
+  not covered by the underlying: a short call needs long futures or long physical units of the instrument's benchmark behind it, a
+  short put short ones; the count is net per instrument. It is a soft limit with the usual three strikes, and a forced reduction
+  closes option positions pro rata at the touch like futures.
+* **Strategies.** A collar (long put, short call), put spread, call spread, straddle and strangle trade as packages of option
+  orders sharing a package id; the player's side reverses every leg. The ported `buildStrategy` payoff maths is unchanged.
+* **A vol spike event** raises event intensity (the vol surface multiplier) and the regime with it, so depth halves while vol is
+  high; it fades at 30% a day. A **producer programme** event books an option fill with the desk as the counterparty: the client
+  buys puts at the desk's bid and the desk is short from there.
+
+## The refinery (`refinery.ts`)
+
+* **One plant, 100 kb/d.** The prompt says 200 kb/d; the plant is 100 kb/d so a month's crack hedge (1,000 three-lot packages)
+  fits the products' depth and the tier's gross limit on screen. Recorded as a deviation.
+* **Yields** are fixed per slate (WTI Midland: 48% gasoline, 30% diesel, 10% jet, 8% fuel oil, 4% loss; Arab Light: 40/30/8/18/4),
+  stylised. Jet has no contract and prices at diesel plus $2. The margin per barrel is the yield-weighted product price at the
+  prompt cracks less the delivered crude (the slate's benchmark plus its differential plus a delivery cost: $1 for a Permian
+  pipeline barrel, $2.50 for a Gulf VLCC barrel) less $3 of operating cost, with $1 per barrel of capacity a day of fixed cost
+  paid whether the plant runs or not. Every number is on the Desk with its working.
+* **Realisation.** The plant's margin is realised once a day at the settle hour at the day's marks, in cash and in a new
+  `refinery` attribution leg. The plant's forward margin is not marked (the hedge is), which is the margin-call problem of a hedged
+  refinery and is why the tier's drawdown limit is wider on level 14.
+* **Decisions.** Runs (a share of capacity) take effect at the next day's run; a slate change takes effect at the next day's run
+  (stylised 24-hour switch). A hurricane shuts the plant for its duration and a turnaround caps runs at half.
+* **The hedge.** A 3-2-1 package is 2 RBOB and 1 ULSD lots against 3 WTI lots: 126,000 gallons against 3,000 barrels, the same oil,
+  so its flat and basis parts cancel exactly in the factor model and only the crack and time-spread legs remain (tested). The
+  level's hedge target is the next thirty days of runs in 3,000-barrel units.
+* **Events.** A Gulf hurricane (product cracks jump, the prompt softens, Gulf Coast ports close, the world's runs fall, the plant
+  shuts); a turnaround at the plant; the existing world turnaround.
+
+## Gas and LNG (`physical.ts`, `shipping.ts`, `voyages.ts`, `markets.ts`)
+
+* **JKM** joins the instruments as a monthly swap: TTF in dollars per MMBtu (TTF x EURUSD / 3.412) plus an Asian premium that widens
+  when LNG arrivals thin, with its own front spread. Its noise is drawn from a second rng stream ("gas") so every par from
+  milestones 1 to 3 is unchanged; its price parts are flat (TTF in dollars), basis (the premium) and time spread.
+* **Bases.** A cargo leg may price on HH, TTF or JKM as well as the crude benchmarks. Gas bases are in $/MMBtu. A TTF-priced leg
+  decomposes into flat (TTF at the level's opening EURUSD), an `fx` part (the dollar value of the euro price at today's rate against
+  the opening rate) and time spread, so a TTF-priced cargo shows an FX leg in the waterfall without any EUR cash. A TTF-priced
+  invoice is paid in euros into the EUR account at the day's rate (the balance is revalued first so the FX leg is exact).
+* **The LNG grade** is counted in MMBtu, not barrels (3,600,000 MMBtu a cargo, about 174,000 m3); the engine's quantity field is
+  the same and the unit is the grade's. It prices FOB at Henry Hub plus a $2.50 tolling fee (deviation: the prompt's "115% of
+  Henry Hub" is a fee here so the leg stays an average plus a differential), is carried only by an LNG carrier (and an LNG carrier
+  carries nothing else), and is marked unsold at the netback of its discharge terminal: the terminal's hub (TTF at Gate and
+  Zeebrugge, JKM at Sodegaura) less a $0.50 regas fee and a $0.10 buyer's margin, whatever the freight.
+* **Boil-off** of a tenth of a percent of the cargo a day at sea is booked at discharge as product not delivered at the sale price
+  (freight leg) and comes off the invoice; the cargo's quantity field stays the loaded quantity (stylised).
+* **A regas slot** is booked by the player; without one the ship waits three days for one at the terminal with laytime running.
+  The fee is paid at discharge either way.
+* **Physical exposure by basis.** `physicalExposureBbl` now also returns the exposure split by pricing basis in the basis's units,
+  so a gas cargo's hedge is sized in the right contract: 3,600,000 MMBtu is 360 Henry Hub lots, 360 JKM lots, or 1,465 TTF lots
+  (MMBtu / 3.412 / 720). VaR puts gas exposure on its own hub's front contract (TTF after the MWh conversion); crude bases stay on
+  Brent as before so earlier levels are unchanged. The close snapshot records the pre-print exposure by basis.
+* **Gas events.** A weekly US storage release (consensus the morning of, actual against it, Henry Hub moves by the surprise); a
+  cold snap (heating-degree-day anomaly, TTF jumps, storage drains faster, ends after its days); a generic gas shock (used for a
+  Freeport outage and a Norwegian flow surge).
+
+## Signals (`signals.ts`)
+
+* A level's schedule may attach a signal to an event (`params.signal`): a series that leaves its baseline `leadTicks` before the
+  event fires, ramps to its offset at the event, fades over three days after, with noise. Four kinds: tankers at anchor off
+  Fujairah (daily; a build before unsold Gulf crude hits the headlines), Hormuz transits a day (daily; falls before a restriction),
+  satellite hotspots over Jamnagar (hourly; two ticks before a fire), the European heating-degree-day forecast (daily; rises
+  before a cold snap). Each carries the contract it bears on, the direction, a lag note and a sentence on what it can and cannot
+  tell you.
+* The engine computes every series whether or not the feed is bought, so a replay is identical either way; the feed costs
+  $75,000 for the level (finance leg) and only then are the series shown on Intel and the Map and announced on screen.
+* The headline tick of each signal's event is recorded when the event fires (the shock plus the tier's delay), and
+  `signalTrades` counts fills tagged "signal" in the right contract and direction between the first move and the headline: the
+  pass check for level 17.
+* Thin back months: a level knob (`backMonthDepth`) multiplies depth from the third listed month out; tier 4 uses 0.5.
+
+## Levels 14 to 17
+
+See `docs/LEVELS.md`. Decisions recorded:
+
+* Level 14's "margin realised inside par" is read as within 5% of par; "the crack hedge in band" as within 25% of the next thirty
+  days of runs as they were actually made, at four closes in five from day 3 (the band absorbs what could not be known about the
+  hurricane and the turnaround). The slate is a daily decision; an OSP cut on day 0 and another on day 20 make the sour barrel the
+  cheaper one for a while each time, and the objective asks for the better slate seven days in ten.
+* Level 15's pass asks for the purchase hedged on Henry Hub and the sale hedged on its own hub in its own units; a cargo that is
+  hedged in the wrong contract or the wrong units is visibly out of band. Both terminals bid; the bot (and the player) choose by
+  netback. The LNG arb is not positive on every seed: on two of twelve random seeds the cargo loses money even hedged well, and
+  the right play there would be to decline it; ten passing seeds are checked in and the limitation is recorded.
+* Level 16's par is negative (about -$1.9m on seed 1): the solution hedges a cargo with puts and a collar (which cost the vol
+  spread, slippage and theta, and before expiry are a delta, not a floor), then carries a client's short-put programme through a
+  vol spike that doubles implied vol. The pass is process: the hedges made, the programme delta-hedged within 60 lots at three
+  closes in four, never more than 200 naked short lots at a close (the naked rule counts lots, so the programme's 300 puts need
+  at least 100 short futures behind them whatever the delta says), and delta, vega and theta all on the waterfall.
+* Level 17's news is 36 hours behind the world and three rumours arrive among the headlines (half true by the schedule's coin).
+  The pass asks for two signals traded before their headlines and the book flat of signal positions at the end; the bot enters
+  on two consecutive off-baseline readings (one for the hourly hotspot feed), sized inside a $3m VaR, and leaves three days after
+  the headline. One random seed in twelve loses money on the trades (a true rumour moved the market against a signal position).
+
+## Deviations recorded in milestone 4
+
+* Refinery capacity 100 kb/d, not 200 (see above).
+* Options are futures-style margined and cash-settled at intrinsic on expiry; no exercise into futures; no market impact on
+  options; the option block rule is a quarter of the future's.
+* LNG prices at Henry Hub plus a tolling fee, not at 115% of Henry Hub; quantities in MMBtu in the cargo's quantity field; boil-off
+  booked as a cost at discharge rather than as a quantity change.
+* JKM is listed with three-tick spreads and 25 lots at the touch (as the Dubai swap) rather than thinner: with ten lots the
+  bot's hedge of a full cargo paid more in impact than the arb was worth.
+* The tanker-cluster, transit, hotspot and cold-forecast series are stylised shapes (ramp, hold, fade) around stated baselines,
+  not models of shipping or weather.
+* The "refinery" attribution leg is new (the prompt's list has no leg for a plant's realised margin).

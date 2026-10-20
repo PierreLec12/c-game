@@ -7,17 +7,19 @@ wrong.
 **Play it:** https://pierrelec12.github.io/c-game/ (static, offline after load, nothing to install; level 0 takes two
 minutes).
 
-Milestones 1 to 3 ship the paper desk, the physical desk and the money: tiers 0 to 3 (levels 0 to 13), the engine core with
-cargoes, pricing windows, ships, routes and chokepoints on a bundled coastline, letters of credit, prepayment, a covenant,
-insurance, counterparties with ratings and memory, tanks and blending, delayed headlines and rumours, the Bridge, Markets, Desk,
-Map, Book and risk, Intel, Finance and Academy screens, saves, and the debrief with a solution-bot ghost line and what-if
-replays. The refinery, gas and LNG, options and signals come in milestone 4.
+Milestones 1 to 4 ship the paper desk, the physical desk, the money, and the products, gas, options and signals: tiers 0 to 4
+(levels 0 to 17), the engine core with cargoes, pricing windows, ships, routes and chokepoints on a bundled coastline, letters of
+credit, prepayment, a covenant, insurance, counterparties with ratings and memory, tanks and blending, delayed headlines and
+rumours, a refinery with yields and a slate, the LNG chain from Sabine Pass to Gate or Sodegaura with the euro leg, options on the
+book with Greek attribution, signals that arrive before the news, the Bridge, Markets, Desk, Map, Book and risk, Intel, Finance
+and Academy screens, saves, and the debrief with a solution-bot ghost line and what-if replays. The crisis levels, the quarter and
+Partner come in milestone 5.
 
 ![Markets](docs/screenshots/markets.png)
 
 ![Map](docs/screenshots/map.png)
 
-## What it teaches (tiers 1 to 3)
+## What it teaches (tiers 1 to 4)
 
 Lots, ticks and settles; sizing to a VaR limit before choosing a direction; initial and variation margin and what a
 margin call does; contango, backwardation, full carry and the roll; spreads as packages, Brent-WTI and the 3-2-1 crack;
@@ -26,8 +28,11 @@ and the bill of lading, a pricing window as an exposure, lots from barrels, hedg
 basis and grade differentials, selling East on Dubai, the EFP, the hidden time spread in mismatched windows, freight as a
 share of the barrel, a restricted strait as a freight shock and a time spread at once, storage on water. Then the money: working capital, letters
 of credit, prepayment as a loan, the cheapest name for a reason, concentration, due diligence, VaR as a quantile, gross versus
-net, reducing before you are told, cash and carry, storage economics, blending to a spec. Every number on screen explains itself
-on hover. Every reference figure is labelled stylised.
+net, reducing before you are told, cash and carry, storage economics, blending to a spec. Then the products, gas, options and
+signals: yields and the slate, the seasonality of cracks, a turnaround as a supply event, MMBtu against MWh against cubic metres,
+the netback, storage as the gas curve, Black-76 in one screen, delta as a hedge ratio that moves, vol as a price, lags, signal
+against noise, what a transit count can and cannot tell you. Every number on screen explains itself on hover. Every reference
+figure is labelled stylised.
 
 ## Run it locally
 

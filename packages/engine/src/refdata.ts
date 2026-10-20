@@ -72,8 +72,8 @@ export const INSTRUMENTS: Record<InstrumentId, InstrumentSpec> = {
     initialMarginShare: S(0.08, "section 14: crude 8%"), fee: S(2.0, "an OTC swap cleared: a little more than a future"), dailyVolumeLots: S(40000, "order of magnitude; thinner than Brent"), baseSpreadTicks: S(3, "three ticks: a swap market"),
     baseDepthLots: S(25, "lots at the touch"), expiryRule: "swap", firstDeliveryMonthOffset: 0 },
   JKM: { id: "JKM", name: "JKM swap", family: "gas", unit: "$/MMBtu", lot: 10000, lotUnit: "MMBtu", tick: 0.005, currency: "USD", decimals: 3,
-    initialMarginShare: S(0.18, "between HH and TTF: 18%"), fee: S(2.0, "an OTC swap cleared"), dailyVolumeLots: S(15000, "thin: an Asian LNG marker"), baseSpreadTicks: S(4, "four ticks"),
-    baseDepthLots: S(10, "lots at the touch"), expiryRule: "swap", firstDeliveryMonthOffset: 0 },
+    initialMarginShare: S(0.18, "between HH and TTF: 18%"), fee: S(2.0, "an OTC swap cleared"), dailyVolumeLots: S(15000, "thin: an Asian LNG marker"), baseSpreadTicks: S(3, "three ticks: a swap market, as Dubai"),
+    baseDepthLots: S(25, "lots at the touch: as Dubai, thinner than the hubs"), expiryRule: "swap", firstDeliveryMonthOffset: 0 },
 };
 
 export const TTF_LOT_NOTE = S(720, "the prompt says 1 MWh per lot-unit; the game trades a stylised 720 MWh lot (1 MW for a 30-day month) so a lot is a sensible size on screen. Recorded as a deviation.");
@@ -200,9 +200,9 @@ export const STRESS_SHOCKS = S(
 
 export const OPTIONS = {
   volSpreadPoints: S(1.0, "an option trades at model value with one vol point either side (stylised vol spread)"),
-  depthLots: S(20, "lots at the touch on an option, stylised"),
+  depthLots: S(40, "lots at the touch on an option, stylised"),
   strikeStep: S({ BRENT: 1, WTI: 1, RBOB: 0.05, ULSD: 0.05, HH: 0.1, TTF: 1, DUBAI: 1, JKM: 0.25 }, "listed strike spacing, stylised"),
-  strikesEachSide: S(8, "listed strikes either side of the forward"),
+  strikesEachSide: S(20, "listed strikes either side of the forward; a strike the player holds stays listed whatever the forward does"),
   expiryBusinessDaysBeforeFuture: S(3, "an option expires three business days before its future (stylised; ICE Brent options expire a few days before)"),
   shortMarginDeltaFloor: S(0.25, "initial margin on a short option: the notional share times at least a quarter delta (stylised)"),
   futuresStyle: "options are margined like futures: no premium changes hands at the fill, variation margin settles daily (ICE Brent style, stylised)",

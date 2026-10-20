@@ -49,6 +49,7 @@ describe("options on the book", () => {
     const m = s.listed.BRENT[1];
     const strikes = listedStrikes(s, "BRENT", m);
     expect(strikes.length).toBe(2 * OPTIONS.strikesEachSide.value + 1);
+    expect(strikes[0]).toBeGreaterThan(0);
     const k = strikes[OPTIONS.strikesEachSide.value];
     const q = optionQuote(s, "BRENT", m, "put", k)!;
     const inp = optionInputs(s, "BRENT", m, k);
@@ -140,6 +141,36 @@ describe("options on the book", () => {
     expect(r3.refused.length).toBe(0);
     expect(r3.state.lots.length).toBe(2);
     expect(r3.state.lots.every((l) => l.packageId === r3.state.lots[0].packageId)).toBe(true);
+  });
+});
+
+describe("a producer's programme and a held strike", () => {
+  it("books the client's puts as a short position at the desk's bid, and a held strike stays listed when the forward moves away", () => {
+    const spec = tier4(1005, { days: 6, events: [{ id: "prog", kind: "option_programme", day: 1, hour: 10, params: { counterparty: "DELTA_INDEPENDENT", inst: "BRENT", monthIdx: 2, qty: 120, strikeOffset: -3 } }] });
+    const { s, checks } = run(spec, 21, () => []);
+    for (const c of checks) expect(Math.abs(c.gap)).toBeLessThan(0.01);
+    const lot = s.lots.find((l) => l.option)!;
+    expect(lot.qty).toBe(-120);
+    expect(lot.option!.kind).toBe("put");
+    expect(s.fills[0].side).toBe("sell");
+    expect(s.news.some((n) => /hedging programme/.test(n.headline))).toBe(true);
+    // the strike stays listed whatever the forward does
+    const far = { ...s, quotes: { ...s.quotes, [ckey("BRENT", lot.month)]: { ...s.quotes[ckey("BRENT", lot.month)], mid: lot.option!.strike + 40 } } } as State;
+    expect(listedStrikes(far, "BRENT", lot.month)).toContain(lot.option!.strike);
+    expect(nakedShortOptions(s, coverLotsByInst(s)).total).toBe(120);
+  });
+  it("a gas shock moves the hubs and the storage picture by its parameters", () => {
+    const spec = tier4(1006, { days: 4, events: [{ id: "g", kind: "gas_shock", day: 1, hour: 9, params: { hhPct: -0.1, ttfPct: 0.05, euGas: 5, headline: "Test shock" } }] });
+    const s0 = newGame(spec, 2, { par: 0 });
+    const rng = makeRng(2);
+    let s = s0;
+    for (let i = 0; i < 24 + 8; i++) s = tick(s, [], rng).state;
+    const before = s.factors.hhPrompt, ttfBefore = s.factors.ttfPrompt, eu = s.world.gasStorageGap.eu;
+    s = tick(s, [], rng).state; s = tick(s, [], rng).state;
+    expect(s.factors.hhPrompt / before).toBeLessThan(0.95);
+    expect(s.factors.ttfPrompt / ttfBefore).toBeGreaterThan(1.02);
+    expect(s.world.gasStorageGap.eu - eu).toBeGreaterThan(3);
+    expect(s.news.some((n) => n.headline === "Test shock")).toBe(true);
   });
 });
 
