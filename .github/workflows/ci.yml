@@ -39,7 +39,8 @@ jobs:
           path: apps/web/dist
 
   deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # GitHub Pages needs a public repository on the free plan; while the repo is private the site is built and tested but not deployed
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && github.event.repository.private == false
     needs: test-and-build
     runs-on: ubuntu-latest
     environment:

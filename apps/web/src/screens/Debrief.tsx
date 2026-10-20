@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { getLevel, runPolicy } from "@desk/engine";
+import { getLevel, runPolicy, whatIf } from "@desk/engine";
 import { cardById } from "@desk/content";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
@@ -15,12 +15,17 @@ export function Debrief() {
   const seed = useGame((g) => g.seed);
   const submit = useGame((g) => g.submit);
   const startLevel = useGame((g) => g.startLevel);
+  const log = useGame((g) => g.log);
   const ghost = useMemo(() => {
     if (!state || state.level.status === "running") return null;
     const spec = getLevel(state.level.id);
     const { state: bot } = runPolicy(spec, seed, spec.solve);
     return bot;
   }, [state?.level.id, state?.level.status, seed]);
+  const hadHedges = !!state && state.fills.some((f) => f.tag === "hedge");
+  const physical = !!state && state.cargoes.length > 0;
+  const unhedged = useMemo(() => (state && state.level.status !== "running" && physical && hadHedges ? whatIf(seed, state.level.id, log, "unhedged", state.level.endedTick ?? state.tick) : null), [state?.level.id, state?.level.status, seed, log, physical, hadHedges]);
+  const fullHedge = useMemo(() => (state && state.level.status !== "running" && physical ? whatIf(seed, state.level.id, log, "fullhedge", state.level.endedTick ?? state.tick) : null), [state?.level.id, state?.level.status, seed, log, physical]);
   if (!state) return <div className="panel"><h1>Debrief</h1><p className="notyet">not yet: start a level from the Academy.</p></div>;
   if (state.level.status === "running") return <div className="panel"><h1>Debrief</h1><p className="notyet">not yet: the level is still running. The debrief opens when it ends (or end it from the Bridge once the objectives are done).</p></div>;
   const sc = state.level.score;
@@ -46,9 +51,9 @@ export function Debrief() {
       </div>
       <div className="panel" style={{ gridColumn: "1 / -1" }}>
         <h2>Your path and the solution bot's ghost</h2>
-        <Line startDay={state.startDay} format={(v) => usd(v)} series={[{ name: "your P&L", colour: "var(--crude)", points: state.pnl.equityCurve.map((p) => ({ tick: p.tick, v: p.pnl })) }, ...(ghost ? [{ name: "solution bot (same seed)", colour: "var(--mentor)", dashed: true, points: ghost.pnl.equityCurve.map((p) => ({ tick: p.tick, v: p.pnl })) }] : [])]} markers={[...markers, ...eventMarkers].slice(0, 40)} />
+        <Line startDay={state.startDay} format={(v) => usd(v)} series={[{ name: "your P&L", colour: "var(--crude)", points: state.pnl.equityCurve.map((p) => ({ tick: p.tick, v: p.pnl })) }, ...(ghost ? [{ name: "solution bot (same seed)", colour: "var(--mentor)", dashed: true, points: ghost.pnl.equityCurve.map((p) => ({ tick: p.tick, v: p.pnl })) }] : []), ...(unhedged ? [{ name: "what if: no hedges", colour: "var(--risk)", dashed: true, points: unhedged.pnl.equityCurve.map((p) => ({ tick: p.tick, v: p.pnl })) }] : []), ...(fullHedge ? [{ name: "what if: hedged the whole window", colour: "var(--cash)", dashed: true, points: fullHedge.pnl.equityCurve.map((p) => ({ tick: p.tick, v: p.pnl })) }] : [])]} markers={[...markers, ...eventMarkers].slice(0, 40)} />
         <Line startDay={state.startDay} height={140} format={(v) => v.toFixed(2)} series={[{ name: "Brent front mid", colour: "var(--crude)", points: state.pnl.equityCurve.map((p) => ({ tick: p.tick, v: (p as { price?: number }).price ?? 0 })) }]} markers={markers.slice(0, 40)} />
-        <div className="small muted">What-if replays ("what if I had not hedged") arrive with the first cargo in milestone 2.</div>
+        <div className="small muted">{physical ? <>What-if: the log replayed from the same seed {hadHedges ? "with every hedge removed (red) and " : ""}with the unpriced barrels hedged one-for-one at every close (green). Ends: {unhedged ? `no hedges ${usd(unhedged.pnl.total)}` : ""}{unhedged && fullHedge ? ", " : ""}{fullHedge ? `full hedge ${usd(fullHedge.pnl.total)}` : ""}.</> : "What-if replays appear on physical levels."}</div>
       </div>
       <div className="panel">
         <h2>Where the P&L came from</h2>

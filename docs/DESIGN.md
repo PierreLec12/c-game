@@ -1,7 +1,7 @@
 # DESK: design as built
 
-Milestone 1 (the paper desk), written 2026-10-19. This file records what was actually built and every deviation from
-`BUILD_PROMPT.md`. It is updated at the end of every milestone.
+Milestone 1 (the paper desk) written 2026-10-19; milestone 2 (the cargo and the ship) added 2026-10-20. This file records what
+was actually built and every deviation from `BUILD_PROMPT.md`. It is updated at the end of every milestone.
 
 ## Stack (section 3.1 of the prompt; default kept)
 
@@ -185,9 +185,6 @@ Nine routes with a persistent top bar; Desk and Map say "not yet" with the level
 progress, About, export and import. Keyboard: space, 1/2/3, N. Colours pass WCAG AA on the navy; the smoke test runs
 axe on every screen and fails on serious or critical violations.
 
-## Pricing-window vocabulary, map projection, waypoints (section 15)
-
-Milestone 2.
 
 ## Level pars and bots (section 15)
 
@@ -209,3 +206,105 @@ and 10). No bot needed a rule change; level 1's bot takes profit once the level'
 * **Drills may be retried** when wrong; the level still needs six of six.
 * The engine's "desk view" (the model's fair value) is shown on the Bridge in tiers 0 and 1 only: it is the level's
   briefing made explicit, and the bots for levels 1 and 4 act on it as a player would.
+
+---
+
+# Milestone 2: the cargo and the ship (2026-10-20)
+
+## New engine modules
+
+| Module | What |
+|---|---|
+| `world_data.ts` | ports, the sea graph (nodes, edges), chokepoint parameters, vessel classes and the named fleet, the grade quality grid, the counterparties, shipping parameters, the prompt's reference voyage days |
+| `shipping.ts` | great-circle distances, Dijkstra routing with closed chokepoints removed, positions along a path, charter quotes, voyage planning, re-pathing from where a ship is, passage options |
+| `physical.ts` | pricing windows, basis forwards by part, leg and cargo marks, attribution rows, prints and invoices at the settle, payments, EFP, claims |
+| `voyages.ts` | the per-tick voyage stepper: ballast, laycan, loading, bill of lading, laden, restricted passages, berth queues, discharge, demurrage, release; automatic rerouting; diversions |
+| `counterparties.ts` | fair differentials on the grade grid (plus freight and insurance for delivered terms), tender issuance with the counterparty's edge |
+
+The state gained `cargoes`, `tenders`, `vessels`, `voyages`, `chokepoints`, `portCongestion`, a `DUBAI` instrument (a monthly swap,
+1,000 bbl, three ticks wide, thinner than Brent), grade differentials and a freight index in the factors, a per-close snapshot
+(`risk.closes`) of physical exposure and net lots, and the actions `accept_tender`, `decline_tender`, `fix_charter`, `instruct_ship`,
+`efp`, `settle_claim`, `contest_claim`.
+
+## Pricing-window vocabulary (section 15)
+
+A window is a list of level days. "5 days after B/L" is the five business days after the bill of lading day; "5 days after
+discharge" the five after discharge completes; "month average" every business day of the B/L's calendar month; "deemed B/L"
+is "after B/L" anchored on a stated day whatever the ship does. A day's assessment is the model's value of the basis at that
+day's 19:00 settle: for Dated, the Brent prompt plus the front structure plus the Dated differential; for Dubai, the prompt
+minus the East-West spread plus the Dubai structure; for WTI, minus Brent-WTI. Before a window is anchored the leg is marked
+on the expected anchor (the laycan start plus one day; the ETA plus two days). The invoice is due five days after the window
+completes (stylised; a real contract says thirty days after B/L).
+
+**An unpriced day is marked at the forward assessment for that day**: the prompt plus the structure at the front contract's
+tau plus the days ahead. That makes a window the same object as a futures position in the attribution (flat, time spread,
+basis), and it is why a purchase on the month average against a sale a month later shows a time-spread leg the moment it is
+accepted (level 8). A leg is booked over all its days: printed days at the parts recorded at their print, unpriced days at
+today's forward, plus the differential; the sum is the leg's mark, so re-anchoring a window at the bill of lading, a print,
+or a differential change all attribute exactly. An unsold cargo is marked at its benchmark forward at the expected discharge
+plus the market differential delivered (the grade grid plus the cargo's own expected freight and insurance); when a sale is
+contracted the expected mark is reversed and the contract booked.
+
+The physical exposure in barrels is long on unpriced sales and unsold oil and short on unpriced purchases; it enters the VaR
+as front-Brent barrels and it is the number the hedge coverage bar compares the futures to.
+
+## Map projection, coastline, waypoints (section 15)
+
+Natural Earth 110m land (public domain, 138 KB, 127 polygons) bundled as JSON and drawn once to an offscreen canvas in
+d3-geo's equal-earth projection; ships, ports, chokepoints, routes, trails and callouts are drawn on top each frame. The sea
+graph has 20 port nodes, 11 chokepoint nodes and about 75 hand-placed waypoints joined by about 125 edges; routes are
+shortest paths over it with closed chokepoints removed. The test samples every edge at fifteen points and asserts none fall
+inside the land polygon, exempting points within 110 km of a port and 200 km of a strait or canal node, because the 110m
+coastline resolves neither harbours nor canals. Distances are great-circle sums; voyage days are distance over 12.5 knots
+laden (13.5 ballast) and come out within a third of the prompt's stylised table (Ras Tanura to Rotterdam via Suez about 23
+days against the table's 20; the table is kept in `world_data.ts` as the reference the test checks).
+
+## Shipping mechanics
+
+A voyage charter is hire per day (class base times the freight index times the owner's edge) times ballast, laden and four
+port days, plus an 8% margin (stylised). Fixing a ship that cannot reach the load port by the laycan end is refused. Loading
+takes 30 hours after the laycan opens; the bill of lading is signed when it completes. At the discharge port a ship tenders
+notice of readiness, berths six hours after the later of its arrival, the port's congestion clearing and the discharge
+window opening, and discharges in 24 hours; laytime is 36 hours from the later of notice and window start, and the excess
+is demurrage at the ship's hire. A ship can be slowed to 70% of service speed or held at anchor before notice (storage on
+water, at full hire). A restricted chokepoint holds a laden ship for an instruction: transit with a convoy delay and a
+war-risk premium per barrel, or go round; a closed chokepoint re-routes every affected voyage from where it is, with the
+detour's days and hire shown. Freight, demurrage and war risk are paid at delivery; invoices five days after their window.
+
+The calendar-spread package trades in a book four times deeper than the outright book (stylised), so a cargo-sized spread
+hedge is affordable; outright blocks above 2% of daily volume are still refused.
+
+## Counterparties in milestone 2
+
+The roster of section 4 exists with ratings and behaviour profiles; producers and refiners issue tenders at the fair
+differential plus their edge, shipowners quote hire at their edge, the inspector raises a quality claim that can be settled
+or contested (a coin toss, losing costs 25% more). Memory, late payment, default and ratings that move arrive in milestone 3.
+
+## Level pars and bots (section 15)
+
+See the table in `docs/LEVELS.md`. Tier 2 bots were tuned over 20 random seeds; the ten checked-in seeds pass. No bot needed
+a rule change, but three things in the engine were wrong until the bots found them: a diversion while in ballast zeroed the
+laden leg; a ship stopped exactly on a strait node was judged one node further along, so "go round" went straight through;
+and a passage decision could be re-issued every hour while the ship waited, charging the premium ninety times.
+
+## Deviations recorded in milestone 2
+
+* **Tier 2 cargoes are one million barrels.** The prompt sizes Arab Light on a VLCC (2 million). At $80 a 2 million barrel
+  invoice is $160m against the tier's $150m line: the purchase payment forces a margin call that liquidates the hedge. Levels
+  8 and 9 take a Suezmax part-cargo; VLCC sizes return with working capital in tier 3.
+* **Level 5's stop-loss is $8m** rather than the tier's $4m, because the level is unhedged on purpose and a $5 move on
+  600,000 barrels is the lesson, not a life.
+* **Level 7 sells to Jamnagar, not Ningbo**: Bonny to Ningbo round the Cape is 35 days and the level would not fit 45; the
+  Asian refiner takes Jamnagar on Dubai, which teaches the same East-West exposure.
+* **Hedging the day's print**: the day's assessment lands at the settle, so the exposure a trader can hedge by a close is the
+  one before that settle's prints; the close snapshot records it and the ratio objective reads it. Hedging "ahead" of the
+  print would be over-hedged intraday in this model.
+* **Level 8's pass rule** needs the calendar-spread package in the same run, not "the second run": the engine does not know
+  attempts. The briefing says to replay.
+* **Level 9's "freight inside par"** is implemented as "chose the cheaper passage within 10% at the decision", because the
+  bot's freight leg on the player's seed is not available to a live objective; the passage decision records both costs.
+* The quality claim event fires on the first delivered cargo on or after its day; the inspector's re-test is a coin toss.
+* Tier 2 unlocks the Dubai swap from level 7 rather than listing it with the futures from level 0.
+* **Tier 1 pars were re-recorded** (level 1 $102,619; level 2 $76,540; level 3 $60,056; level 4 $106,880): the Dubai swap's
+  structure draws from the price stream, so every tier 1 world differs slightly from milestone 1. The bots still pass their
+  ten seeds. A save from milestone 1 would not replay to the same state; there were no saves to keep.

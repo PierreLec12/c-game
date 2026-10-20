@@ -7,18 +7,24 @@ wrong.
 **Play it:** https://pierrelec12.github.io/c-game/ (static, offline after load, nothing to install; level 0 takes two
 minutes).
 
-Milestone 1 ships the paper desk: tier 0 and tier 1 (levels 0 to 4), the engine core, the Bridge, Markets, Book and
-risk, Intel, Finance and Academy screens, saves, the debrief with a solution-bot ghost line. Cargoes, ships and the map
-come in milestone 2.
+Milestones 1 and 2 ship the paper desk and the physical desk: tiers 0 to 2 (levels 0 to 9), the engine core with cargoes,
+pricing windows, ships, routes and chokepoints on a bundled coastline, the Bridge, Markets, Desk, Map, Book and risk, Intel,
+Finance and Academy screens, saves, and the debrief with a solution-bot ghost line and what-if replays. Working capital,
+counterparties in full, storage and the risk manager's lives come in milestone 3.
 
 ![Markets](docs/screenshots/markets.png)
 
-## What it teaches (tier 1)
+![Map](docs/screenshots/map.png)
+
+## What it teaches (tiers 1 and 2)
 
 Lots, ticks and settles; sizing to a VaR limit before choosing a direction; initial and variation margin and what a
 margin call does; contango, backwardation, full carry and the roll; spreads as packages, Brent-WTI and the 3-2-1 crack;
-releases, consensus and surprise, positioning as a crowd, a leak's base rate. Every number on screen explains itself on
-hover. Every reference figure is labelled stylised.
+releases, consensus and surprise, positioning as a crowd, a leak's base rate. Then the cargo: FOB, CIF and DES, the laycan
+and the bill of lading, a pricing window as an exposure, lots from barrels, hedging the window in a month that outlives it,
+basis and grade differentials, selling East on Dubai, the EFP, the hidden time spread in mismatched windows, freight as a
+share of the barrel, a restricted strait as a freight shock and a time spread at once, storage on water. Every number on
+screen explains itself on hover. Every reference figure is labelled stylised.
 
 ## Run it locally
 

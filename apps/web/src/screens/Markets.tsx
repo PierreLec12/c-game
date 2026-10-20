@@ -5,9 +5,9 @@ import { useGame } from "../store";
 import { Fig } from "../components/Fig";
 import { Curve } from "../charts/Curve";
 
-const ALL: InstrumentId[] = ["BRENT", "WTI", "RBOB", "ULSD", "HH", "TTF"];
-const UNLOCK_LEVEL: Record<InstrumentId, number> = { BRENT: 0, WTI: 3, RBOB: 3, ULSD: 3, HH: 15, TTF: 15 };
-const COLOUR: Record<InstrumentId, string> = { BRENT: "var(--crude)", WTI: "var(--crude)", RBOB: "var(--products)", ULSD: "var(--teal)", HH: "var(--gas)", TTF: "var(--lng)" };
+const ALL: InstrumentId[] = ["BRENT", "WTI", "DUBAI", "RBOB", "ULSD", "HH", "TTF"];
+const UNLOCK_LEVEL: Record<InstrumentId, number> = { BRENT: 0, WTI: 3, RBOB: 3, ULSD: 3, HH: 15, TTF: 15, DUBAI: 7 };
+const COLOUR: Record<InstrumentId, string> = { BRENT: "var(--crude)", WTI: "var(--crude)", RBOB: "var(--products)", ULSD: "var(--teal)", HH: "var(--gas)", TTF: "var(--lng)", DUBAI: "var(--freight)" };
 
 export function Markets() {
   const state = useGame((g) => g.state);
@@ -117,7 +117,7 @@ export function Ticket({ state, inst }: { state: State; inst: InstrumentId }) {
   const [price, setPrice] = useState("");
   const [spreadName, setSpreadName] = useState<"time" | "inter" | "crack321">("time");
   const [leg2Inst, setLeg2Inst] = useState<InstrumentId>("WTI");
-  const [tag, setTag] = useState<LegTag>("outright");
+  const [tag, setTag] = useState<LegTag>(state.cargoes.length > 0 ? "hedge" : "outright");
   const spec = INSTRUMENTS[inst];
   const month = selected?.inst === inst && selected.month ? selected.month : state.listed[inst][0];
   const est = useMemo(() => estimateFill(state, inst, month, side, qty), [state, inst, month, side, qty]);

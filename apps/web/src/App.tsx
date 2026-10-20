@@ -12,7 +12,8 @@ import { Academy } from "./screens/Academy";
 import { Debrief } from "./screens/Debrief";
 import { Intel } from "./screens/Intel";
 import { Finance } from "./screens/Finance";
-import { NotYet } from "./screens/NotYet";
+import { Desk } from "./screens/Desk";
+import { Map } from "./screens/Map";
 
 function Shell() {
   useClock();
@@ -27,8 +28,8 @@ function Shell() {
           <Route path="/" element={<Navigate to="/academy" replace />} />
           <Route path="/bridge" element={<Bridge />} />
           <Route path="/markets" element={<Markets />} />
-          <Route path="/desk" element={<NotYet title="Desk" reason="Tenders, cargoes, vessels and tanks unlock at level 5, the first physical level (milestone 2)." />} />
-          <Route path="/map" element={<NotYet title="Map" reason="The world map with ships, ports and chokepoints arrives with the first cargo at level 5 (milestone 2)." />} />
+          <Route path="/desk" element={<Desk />} />
+          <Route path="/map" element={<Map />} />
           <Route path="/book" element={<Book />} />
           <Route path="/intel" element={<Intel />} />
           <Route path="/finance" element={<Finance />} />

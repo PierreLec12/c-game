@@ -1,9 +1,9 @@
-import { attributionTotals, ckey, grossLots, INSTRUMENTS, monthLabel, netLots, positions, type AttributionLeg, type InstrumentId, type State } from "@desk/engine";
+import { attributionTotals, cargoMark, ckey, GRADES, grossLots, INSTRUMENTS, monthLabel, netLots, physicalExposureBbl, PORTS, positions, type AttributionLeg, type InstrumentId, type State } from "@desk/engine";
 import { useGame } from "../store";
 import { Fig } from "../components/Fig";
 import { Waterfall } from "../charts/Waterfall";
 
-export const LEG_LABEL: Record<AttributionLeg, string> = { flat: "Flat price", basis: "Basis (Brent-WTI)", time_spread: "Time spread", crack: "Crack", fees_slippage: "Fees and slippage", fx: "FX", finance: "Finance", options: "Options", freight: "Freight", storage: "Storage", quality: "Quality" };
+export const LEG_LABEL: Record<AttributionLeg, string> = { flat: "Flat price", basis: "Basis (Brent-WTI)", time_spread: "Time spread", crack: "Crack", fees_slippage: "Fees and slippage", fx: "FX", finance: "Finance", options: "Options", freight: "Freight", demurrage: "Demurrage", storage: "Storage", quality: "Quality" };
 
 export function waterfallRows(state: State) {
   const totals = attributionTotals(state.pnl.attribution);
@@ -46,6 +46,20 @@ export function Book() {
         )}
         <div className="small muted" style={{ marginTop: 6 }}>Unrealised since settle <Fig v={unreal} fmt="usd" sign what="Unrealised P&L since the last settle" why="Sum over open lots of (mid - last mark) x lots x lot size." /> · realised <Fig v={state.pnl.realised} fmt="usd" sign what="Realised P&L" why="Variation margin received at settles plus closed lots, before fees and interest." /> · fees <Fig v={-state.pnl.fees} fmt="usd" sign what="Fees paid" why="Exchange and clearing fees on every fill." /> · interest <Fig v={-state.pnl.interest} fmt="usd" sign what="Interest paid" why="Daily interest on the drawn line at base plus 150 bp." /></div>
       </div>
+      {state.cargoes.length > 0 && (
+        <div className="panel" id="physical" style={{ gridColumn: "1 / -1" }}>
+          <h2>Physical book <span className="muted">(net unpriced exposure <Fig v={physicalExposureBbl(state).bbl} fmt="int" what="Net unpriced physical barrels" why="Long on unpriced sales and unsold cargoes, short on unpriced purchases; the number the futures hedge should offset." /> bbl)</span></h2>
+          <table><thead><tr><th>Cargo</th><th>Route</th><th className="num">Purchase $/bbl</th><th className="num">Sale $/bbl</th><th className="num">Freight</th><th className="num">Other costs</th><th className="num">Mark</th><th className="num">Exposure bbl</th></tr></thead>
+            <tbody>{state.cargoes.map((c) => { const m = cargoMark(state, c); return (
+              <tr key={c.id}><td>{c.id} {GRADES[c.grade].name} {c.bbl.toLocaleString()} bbl <span className="badge">{c.status}</span></td><td className="small">{PORTS[c.loadPort].name} to {PORTS[c.dischargePort].name}</td>
+                <td className="num"><Fig v={m.purchasePerBbl} fmt="px" what="Purchase value per barrel" why="Printed days fixed, unpriced days at today's forward, plus the differential." /></td>
+                <td className="num">{m.salePerBbl !== null ? <Fig v={m.salePerBbl} fmt="px" what="Sale value per barrel" why="Printed days fixed, unpriced days at today's forward, plus the differential." /> : <Fig v={m.expectedSalePerBbl} fmt="px" what="Expected sale per barrel (unsold)" why="The benchmark forward at the expected discharge plus the market differential delivered." />}</td>
+                <td className="num"><Fig v={-m.freightUsd} fmt="usd" sign what="Freight still to pay" why={c.freight.fixedUsd !== null ? "Fixed charter, paid at delivery." : "Expected: the cheapest fitting quote."} /></td>
+                <td className="num"><Fig v={-(m.extra.demurrage + m.extra.warRisk + m.extra.quality)} fmt="usd" sign what="Demurrage, war risk, claims" why="Unpaid extra costs on this cargo." /></td>
+                <td className="num"><Fig v={m.valueUsd} fmt="usd" sign what="Cargo mark" why="Everything not yet paid or received, at today's forwards." /></td>
+                <td className="num"><Fig v={physicalExposureBbl(state).byCargo[c.id] ?? 0} fmt="int" what="Net unpriced barrels of this cargo" why="Long on the unpriced sale, short on the unpriced purchase." /></td></tr>); })}</tbody></table>
+        </div>
+      )}
       <div className="panel">
         <h2>Greeks</h2>
         <table><thead><tr><th>Instrument</th><th className="num">Delta (units)</th><th className="num">Gamma</th><th className="num">Vega</th><th className="num">Theta</th></tr></thead>
